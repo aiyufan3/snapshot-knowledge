@@ -17,12 +17,12 @@ that must be traceable to a quoted page version. Nothing is generated: every num
 answer comes from a page, and every page is named.
 
 > [!IMPORTANT]
-> The website data and the evaluation harness this system is normally run with are maintained
-> separately and are **not** part of this repository. The code is written against the snapshot
-> format described below rather than against any particular organisation. It was developed
-> and tested on English-language financial-institution pages (rates, fees, branches,
-> membership) and has not been tried on other kinds of sites. `tests/fixtures/` contains a
-> complete fictional example that every test and demo in this document runs against.
+> The real website pages this system was developed against belong to an organisation and
+> cannot be redistributed, so they are **not** part of this repository. The code is written
+> against the snapshot format described below rather than against any particular organisation.
+> It was developed and tested on English-language financial-institution pages (rates, fees,
+> branches, membership) and has not been tried on other kinds of sites. `tests/fixtures/`
+> contains a complete fictional example that every test and demo in this document runs against.
 
 ## Contents
 
@@ -98,7 +98,7 @@ other; the other extractors apply the same valid-time rule with logic of their o
 
 ```mermaid
 sequenceDiagram
-    participant H as Harness or caller
+    participant H as Caller
     participant K as Knowledge object from build()
     H->>K: ingest(snapshot_1) ... ingest(snapshot_n), oldest first
     Note over K: one SnapIndex per snapshot, last-seen pages recorded
@@ -142,7 +142,7 @@ stateDiagram-v2
 | Contact and branch facts | Phone numbers come only from the contact page's own general line or from a branch's own section; fax, partner, PIN and fraud lines are never offered as the main number. Hours are bound to branch and service. | Section-aware line reading with role vocabularies; schedules keyed by branch and service with effective dates. |
 | Traceability | Every `Source` names the page URL, the snapshot in which that page version was observed and a verbatim cleaned quote. Tests check every quote against the cited page version. | Quotes trimmed from the page text after Markdown markup is stripped. |
 | Determinism and speed | Identical output across Python hash seeds; about 0.2 s per answer and a few seconds to ingest thousands of page versions. | Fixed iteration orders, no randomness, no I/O at answer time. |
-| Release hygiene | A release check scans files, the index or the whole history for material that must stay private, fails closed without its policy, and is wired into Git hooks. | `tools/privacy_check.py`, `tools/release_allowlist.txt`, `.githooks/`. |
+| Release hygiene | A release check keeps names and data from the confidential development corpus out of the public tree: it scans files, the index or the whole history, fails closed without its policy, and is wired into Git hooks. | `tools/privacy_check.py`, `tools/release_allowlist.txt`, `.githooks/`. |
 
 ## Repository structure
 
@@ -235,8 +235,8 @@ The objects passed to `ingest()` carry the same fields:
 | `answer(question, as_of=None)` | Answers from the newest snapshot, or from the newest snapshot taken on or before `as_of`. Returns `text`, `sources` (url, snapshot id, quote), `confident` and an optional `conflict_note`. |
 | `conflicts()` | Lists places where pages inside the same snapshot publish different values for the same product, tier and measure, with the value the system treats as current and why. One entry per product, measure and tier; a disagreement seen again in a later snapshot is reported once, from that snapshot. |
 
-The method signatures and the `Answer` / `Source` / `Conflict` shapes follow a small contract
-module when one is importable (an external harness can put it on `sys.path`); otherwise
+The method signatures and the `Answer` / `Source` / `Conflict` shapes follow a small `contract`
+module when one is importable (a host application can put its own on `sys.path`); otherwise
 equivalent stand-in dataclasses are used, so the module also runs on its own.
 
 | Return type | Fields |
@@ -326,9 +326,9 @@ sh tools/install_hooks.sh                        # enable the repository's Git h
 | `tests/test_privacy_check.py` | 10 | Generic rules, policy handling, allowlist, fail-closed behaviour of the release check. |
 
 `tools/privacy_check.py` scans the Git index (`--staged`), working-tree files (`--files`) or
-the whole history (`--history`) for material that must not be published: project-specific
-terms from a policy file kept **outside** the repository, plus built-in rules for keys and
-tokens, private-key blocks, home-directory paths, e-mail addresses and attribution trailers.
+the whole history (`--history`) for material that must not be published: terms from the
+confidential development corpus, listed in a policy file kept **outside** the repository,
+plus built-in rules for keys and tokens, private-key blocks, home-directory paths, e-mail addresses and attribution trailers.
 File paths are checked as well as contents, and every published path must match
 `tools/release_allowlist.txt`. In history mode the commit message is checked like file
 content; author and committer fields are checked against the policy terms only. Without a
@@ -341,33 +341,12 @@ passes.
 > The hooks guard against mistakes; they are not a substitute for review. Findings print a
 > rule id and a location only, so that neither policy terms nor matched text are echoed.
 
-### Running an external evaluation
+### Beyond the fixtures
 
-The harness, scorer, question sets and website snapshots used to evaluate this system are
-kept outside this repository. With such a kit unpacked at `$KIT`, the usual invocation is:
-
-```bash
-python $KIT/harness/run_eval.py --submission /path/to/this/repo \
-    --snapshots $KIT/snapshots --eval $KIT/eval/public_eval.jsonl --out /tmp/results
-```
-
-Figures measured locally with that kit, on a laptop:
-
-| Measure | Result |
-|---|---|
-| Public question set (40 questions), harness QA measure | 0.96 |
-| Stale-value trap hits | 0 |
-| Errors | 0 |
-| Kit self-test (5 sample questions, 1 sample conflict) | all pass |
-| P95 answer latency | about 0.2 s |
-| Ingest of five snapshots (about 3,300 page versions) | about 4–5 s |
-
-> [!WARNING]
-> These figures depend on private data and cannot be reproduced from this repository alone.
-> They cover question answering only: the kit publishes no reference list of conflicts for
-> that data, so the conflicts part of the harness's score is not measured, and the system's
-> own conflict list for that data has not been checked against a reference. No accuracy is
-> claimed for it.
+The fixtures are the reproducible part of this repository. The system was also developed and
+checked against a much larger corpus of real financial-institution pages, crawled on several
+dates, which cannot be redistributed; the rules in the next section and the counterexample
+tests came out of that work. Nothing in this repository depends on that corpus.
 
 ## How answers are produced
 
@@ -415,7 +394,7 @@ itself). The tests check every quote against the cleaned text of the cited page 
 | Schedule labels | Branch schedules are labelled with the page's publication date when the page carries one; a page whose first date is an effective date shows that date instead. |
 | Conflict resolution | Follows authority rules (rate sheet > product page > other; newer effective date; expired offers lose). It does not know which of two disagreeing official pages is a typo, and its output has not been validated against a reference list. |
 | Structured measures | Only percentage measures (rate, APR, APY, dividend rate) are parsed as structured facts; fees, minimums and other amounts are answered from text, by the paragraph that states the amount or says there is none. |
-| Procedural questions | A question the pages do not answer ("how do I update my address?") is answered with the site's own contact channel, including its phone number, as a low-confidence answer. This is deliberate: the number is the useful part of the answer, even though a grader that treats any digit in a declined answer as an invented value would count it against the system. |
+| Procedural questions | A question the pages do not answer ("how do I update my address?") is answered with the site's own contact channel, including its phone number, as a low-confidence answer. This is deliberate: the number is the useful part of the answer, even though it means a low-confidence answer carries a number that did not come from the question. |
 | Unknown products | Detecting that a question names an unknown product relies on the word's position and capitalisation; an unusual but legitimate wording can be declined. |
 
 ## License

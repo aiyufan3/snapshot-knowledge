@@ -113,8 +113,8 @@ carry sources and extra text: a scheduled value that is not yet in effect (a rat
 schedule, a contact number or a paragraph), a withdrawal notice, and the site's own contact
 details for a procedural question the pages do not answer.
 The contact answer includes the site's phone number on purpose: it is the useful part of the
-answer, and a grader that treats any digit in a declined answer as an invented value would
-count it against the system. That trade-off is accepted knowingly.
+answer, even though it means a low-confidence answer carries a number that did not come from
+the question. That trade-off is accepted knowingly.
 An eligibility question whose best-matching paragraph states no criteria is also returned with
 `confident=False`.
 
@@ -185,5 +185,5 @@ completion is cited as a further source.
 ## Runtime dependencies and API keys
 
 None. The implementation uses the Python 3.11 standard library only, makes no network calls
-and needs no API keys. The evaluation harness this system is normally run with has an optional
-LLM-based judge that would require a key; this system does not use it.
+and needs no API keys. No language model is used anywhere: retrieval is lexical and every
+answer is assembled from page text.
