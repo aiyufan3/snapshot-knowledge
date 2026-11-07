@@ -358,7 +358,7 @@ class InterfaceTests(Base):
         a = self.ask("What is the routing number?")
         self.assertEqual(str(a), a.text)
 
-    def test_harness_contract_module_is_preferred_when_available(self):
+    def test_external_contract_module_is_preferred_when_available(self):
         fake = types.ModuleType("contract")
 
         @dataclass

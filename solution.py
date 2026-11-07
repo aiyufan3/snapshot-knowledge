@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
 
-try:  # The official harness places its ``contract`` module on sys.path.
+try:  # A host application may provide its own ``contract`` module on sys.path.
     from contract import Answer, Conflict, Source  # type: ignore
 except ImportError:  # Stand-alone use (tests, demos) gets equivalent stand-ins.
 
@@ -969,8 +969,6 @@ class Knowledge:
         months, years = _terms(blob)
         if family == "ira" and (months or years or "certificate" in low_blob):
             family = "certificate"
-        if is_ira and family == "certificate":
-            pass
         year_span = _year_span(local)
         balance = None
         for c in quals + ([label] if "$" in label else []):
@@ -1093,8 +1091,6 @@ class Knowledge:
             gidx = SnapIndex(snap.snapshot_id, snap.taken_on)
             for order, (sid, _taken, page) in enumerate(pages.values()):
                 self._ingest_page(gidx, page, order)
-                for r in gidx.rows[len(gidx.rows) - 1 :: -1]:
-                    pass
             # stamp the originating snapshot on rows/blocks/pages
             seen_ids = {u: sid for u, (sid, _t, _p) in pages.items()}
             for r in gidx.rows:
@@ -2381,8 +2377,6 @@ def _format_row(row: Row, q: str) -> str:
         if deposit:
             if asks_apy and not asks_div and kind != "apy" and "apy" in kinds:
                 continue
-            if asks_div and not asks_apy and kind == "apy" and "dividend" in kinds:
-                pass
         else:
             if asks_apr and not asks_rate and kind != "apr" and "apr" in kinds:
                 continue

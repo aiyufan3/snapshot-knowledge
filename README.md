@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![Runtime dependencies: none](https://img.shields.io/badge/runtime%20dependencies-none-success)
-![Tests: 119 passing](https://img.shields.io/badge/tests-119%20passing-success)
+[![Tests](https://github.com/aiyufan3/snapshot-knowledge/actions/workflows/tests.yml/badge.svg)](https://github.com/aiyufan3/snapshot-knowledge/actions/workflows/tests.yml)
 ![Network access: none](https://img.shields.io/badge/network%20access-none-lightgrey)
 
 A small, dependency-free knowledge system that answers questions about an organisation's
@@ -165,9 +165,10 @@ snapshot-knowledge/
 │   ├── privacy_check.py         # release check: --staged, --files, --history; fails closed without a policy file
 │   ├── release_allowlist.txt    # the only paths that may be published
 │   └── install_hooks.sh         # enables .githooks for this clone only
-└── .githooks/
-    ├── pre-commit               # release check on the index, then the test suite
-    └── pre-push                 # refuses unless release.pushAuthorized=yes and the full history passes
+├── .githooks/
+│   ├── pre-commit               # release check on the index, then the test suite
+│   └── pre-push                 # refuses unless release.pushAuthorized=yes and the full history passes
+└── .github/workflows/tests.yml  # runs the test suite on every push and pull request
 ```
 
 ## Getting started
@@ -324,6 +325,8 @@ sh tools/install_hooks.sh                        # enable the repository's Git h
 | `tests/test_solution.py` | 42 | Temporal selection, no fabrication, product context, extractors, conflicts, interface shapes. |
 | `tests/test_edge_cases.py` | 67 | Counterexamples: effective-date scope on every path, withdrawal semantics, conflict identity, eligibility-area completion, phone roles and branch attribution, named-product fee evidence. |
 | `tests/test_privacy_check.py` | 10 | Generic rules, policy handling, allowlist, fail-closed behaviour of the release check. |
+
+The same suite runs in GitHub Actions on every push and pull request (`.github/workflows/tests.yml`).
 
 `tools/privacy_check.py` scans the Git index (`--staged`), working-tree files (`--files`) or
 the whole history (`--history`) for material that must not be published: terms from the

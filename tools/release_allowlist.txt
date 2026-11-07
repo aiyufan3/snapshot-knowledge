@@ -13,3 +13,4 @@ tools/release_allowlist.txt
 tools/install_hooks.sh
 .githooks/pre-commit
 .githooks/pre-push
+.github/workflows/*.yml
