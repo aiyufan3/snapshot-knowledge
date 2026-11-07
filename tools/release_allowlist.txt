@@ -3,6 +3,7 @@ README.md
 NOTES.md
 requirements.txt
 .gitignore
+LICENSE
 solution.py
 tests/*.py
 tests/fixtures/snapshots/*/manifest.json
