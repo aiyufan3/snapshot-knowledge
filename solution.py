@@ -159,9 +159,13 @@ PHONE_GENERAL_RE = re.compile(
 # A question about a specific line (a card PIN, a lost card, a partner) is not about reaching the organisation.
 SPECIFIC_LINE_Q_RE = re.compile(
     r"\b(?:lost|stolen|pin|fraud|dispute|rewards?|partner|insurance|mortgage|loan|card|collections?|fax|tty|tdd|wire|after[- ]hours)\b", re.I)
-# A paragraph answers a fee question when it states an amount or says there is none.
-FEE_EVIDENCE_RE = re.compile(
-    r"\$\s?\d|\d\s?%|\bno (?:\w+ ){0,2}fees?\b|\bfree\b|\bno (?:charge|cost)\b|\bat no (?:charge|cost)\b|\bwaived\b", re.I)
+# A paragraph answers a fee or minimum question when it states an amount or says there is none.  Merely
+# mentioning a fee ("wire transfers typically carry a fee") is not evidence, nor is the adjective "free"
+# on its own ("free debit card", "Free Checking").
+MIN_Q_RE = re.compile(r"\bminimum\b|\bmin\.?\b|\bat least\b|\bopening (?:deposit|balance)\b|\bhow much (?:do i need|to open|is required)\b")
+AMOUNT_EVIDENCE_RE = re.compile(
+    r"\$\s?\d|\d\s?%|\bno (?:\w+ ){0,2}(?:fees?|charges?|costs?|minimums?)\b|"
+    r"\bfree of charge\b|\b(?:is|are|comes?) free\b|\bat no (?:charge|cost)\b|\bwaived\b", re.I)
 # An eligibility rule may name an area ("our charter area") without saying where it is; the page's
 # own sentence that lists the places served completes it.
 SCOPE_TERM_RE = re.compile(
@@ -592,6 +596,16 @@ def _is_list_text(text: str) -> bool:
     return _is_list_item(text)
 
 
+def _block_names_product(blk: dict, phrase, stems: set, fam_stem: str, business: bool) -> bool:
+    """A paragraph is about the named product when its heading, its label line or its text names it;
+    a business variant of the name is another product unless the question says business."""
+    if not business and (BUSINESS_TOKEN in blk["head"] or "/business" in blk["url"].lower()):
+        return False
+    if phrase.search(blk["heading"]) or phrase.search(blk.get("label") or "") or phrase.search(blk["text"]):
+        return True
+    return stems <= blk["head"] and fam_stem in blk["head"]
+
+
 def _section_lines(lines: list, li: int, limit: int = 12) -> list:
     """The lines of the section that line ``li`` belongs to, from its title (the nearest heading or bare
     label line above, up to ``limit`` lines back) down to the line itself."""
@@ -806,7 +820,7 @@ class Knowledge:
 
         def flush():
             if para:
-                self._add_block(idx, pinfo, heading, para)
+                self._add_block(idx, pinfo, heading, para, labels[-1] if labels else "")
                 para.clear()
 
         i = 0
@@ -1014,7 +1028,7 @@ class Knowledge:
         headers = ["Product", kind.upper()]
         self._add_row(idx, pinfo, heading, labels, headers, [prefix, cell], _effective_date(line), bool(EXPIRED_RE.search(line)), "line", line, prose=prose)
 
-    def _add_block(self, idx, pinfo, heading, para):
+    def _add_block(self, idx, pinfo, heading, para, label=""):
         joined = " ".join(para)
         n_links = len(LINK_RE.findall(joined))
         clean = _clean_inline(joined)
@@ -1035,7 +1049,7 @@ class Knowledge:
             "pub": pinfo["pub"], "fetched_at": pinfo["fetched_at"], "priority": pinfo["priority"],
             "tf": Counter(toks), "len": len(toks), "norm": clean.lower()[:160], "dup": 1,
             "lead": lead, "pos": pinfo["_blocks"], "title_toks": pinfo["title_toks"], "body": set(body),
-            "i": len(idx.blocks),
+            "i": len(idx.blocks), "label": label,
         })
 
     def _finish_index(self, idx: SnapIndex) -> None:
@@ -1163,7 +1177,7 @@ class Knowledge:
         if self._is_rate_question(q):
             r = self._answer_rates(snap, q, ref_day, raw)
             return (self._guard_revoked(snap, q, ref_day, r), 1.0) if r is not None else (self._refuse(_refuse_line(q)), 0.0)
-        r, cov = self._answer_passage(snap, q, ref_day)
+        r, cov = self._answer_passage(snap, q, ref_day, raw)
         return (r, cov) if r is not None else (self._refuse(DEFAULT_REFUSAL), 0.0)
 
     def _is_rate_question(self, q: str) -> bool:
@@ -1491,7 +1505,7 @@ class Knowledge:
         ranked.sort(key=lambda x: (-x[0], x[1]))
         return ranked[:k]
 
-    def _answer_passage(self, snap: SnapIndex, q: str, ref_day: str = "") -> tuple:
+    def _answer_passage(self, snap: SnapIndex, q: str, ref_day: str = "", raw: str = "") -> tuple:
         q_tokens = [t for t in _content(q, self.stop)]
         if not q_tokens:
             return None, 0.0
@@ -1500,9 +1514,15 @@ class Knowledge:
         ranked = self._search_blocks(snap, q_tokens, business=bool(re.search(r"\bbusiness\b|\bcommercial\b", q)))
         if not ranked:
             return (self._contact_fallback(snap, ref_day), 0.0) if procedural else (None, 0.0)
-        fee_q = bool(FEE_Q_RE.search(q))
-        if fee_q:  # a fee answer states an amount or says there is none
-            ranked = [x for x in ranked if FEE_EVIDENCE_RE.search(snap.blocks[x[1]]["text"])]
+        fee_q = bool(FEE_Q_RE.search(q) or MIN_Q_RE.search(q))
+        if fee_q:  # a fee or minimum answer states an amount or says there is none ...
+            ranked = [x for x in ranked if AMOUNT_EVIDENCE_RE.search(snap.blocks[x[1]]["text"])]
+            product = self._named_product(snap, q, raw)
+            if product is not None:  # ... and, for a named product, belongs to that product
+                phrase, stems, fam_stem = product
+                business = bool(re.search(r"\bbusiness\b|\bcommercial\b", q))
+                ranked = [x for x in ranked if _block_names_product(snap.blocks[x[1]], phrase, stems, fam_stem, business)]
+                ranked = [(x[0], x[1], set(x[2]) | stems | {fam_stem}, x[3]) for x in ranked]  # the name is matched by the product check
             if not ranked:
                 return None, 0.0
         best_s = ranked[0][0]
@@ -1588,6 +1608,33 @@ class Knowledge:
                     text = f"{text} {nxt['text']}"
                     sources.append(self._src(nxt.get("snapshot_id", snap.snapshot_id), nxt["url"], nxt["text"]))
         return Answer(text=text, sources=sources, confident=confident, conflict_note=note), coverage
+
+    def _named_product(self, snap: SnapIndex, q: str, raw: str):
+        """The product a question names by family word and preceding name words ("Free Checking",
+        "Premier Checking"): (phrase regex, name stems, family stem) or None.  A name word is one the
+        site's tables use, or a capitalised word that is not the first word of the question."""
+        fam = _family_of(q)
+        if fam == "other":
+            return None
+        words = re.findall(r"[A-Za-z][A-Za-z0-9$'\-]*", raw or "")
+        pat = dict(FAMILY_RULES)[fam]
+        idx = next((i for i, w in enumerate(words) if re.search(pat, w.lower())), None)
+        if idx is None:
+            return None
+        skip = RATE_WORDS | GENERIC_NAME_WORDS | ENTITY_SKIP | set(FAMILY_WORDS.get(fam, set()))
+        named = []
+        k = idx - 1
+        while k >= 0:
+            w = words[k]
+            t = _stem(w.lower())
+            if t in self.stop or t in skip or t.isdigit() or not (t in snap.vocab or (w[:1].isupper() and k > 0)):
+                break
+            named.insert(0, w.lower())
+            k -= 1
+        if not named:
+            return None
+        phrase = re.compile(r"\b" + r"\W+".join(re.escape(w) + r"\w*" for w in named) + r"\W+" + re.escape(words[idx].lower()) + r"\w*", re.I)
+        return phrase, {_stem(w) for w in named}, _stem(words[idx].lower())
 
     def _next_block(self, snap: SnapIndex, blk: dict) -> Optional[dict]:
         """The paragraph that continues ``blk`` on the same page: the next one under the same heading,

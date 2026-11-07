@@ -716,5 +716,56 @@ class PhoneRoleTests(unittest.TestCase):
         self.assertNotIn("555-010-2000", a.text)
 
 
+class NamedProductAmountTests(unittest.TestCase):
+    """A fee or minimum for a named product comes only from text about that product."""
+
+    CHECKING = ("# Checking\n\n| Account | Dividend Rate | APY |\n| --- | --- | --- |\n| Free Checking | 0.00% | 0.00% |\n| Premier Checking | 0.10% | 0.10% |\n\n"
+                "## Free Checking\n\nFree Checking comes with a free debit card and online banking.\n\n"
+                "## Premier Checking\n\nFree debit cards and a $10 monthly fee apply to Premier Checking.\n")
+
+    def test_another_products_fee_is_not_the_answer(self):
+        a = build(("s1", "2026-01-10", [page("/personal/checking", "Checking", self.CHECKING)])).answer("Is there a monthly fee on Free Checking?")
+        self.assertFalse(a.confident, a.text)
+        self.assertNotIn("$10", a.text)
+
+    def test_the_adjective_free_does_not_identify_the_product(self):
+        without_table = self.CHECKING.split("## Free Checking")[1]
+        md = "# Checking\n\n## Free Checking" + without_table
+        a = build(("s1", "2026-01-10", [page("/personal/checking", "Checking", md)])).answer("Is there a monthly fee on Free Checking?")
+        self.assertFalse(a.confident, a.text)
+        self.assertNotIn("$10", a.text)
+
+    def test_same_product_evidence_is_still_used(self):
+        md = "# Checking\n\n## Free Checking\n\nNo monthly fees, no minimum balance.\n\n## Premier Checking\n\nA $10 monthly fee applies.\n"
+        a = build(("s1", "2026-01-10", [page("/personal/checking", "Checking", md)])).answer("Is there a monthly fee on Free Checking?")
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("No monthly fees", a.text)
+        self.assertNotIn("$10", a.text)
+
+    def test_product_named_by_a_label_line_counts(self):
+        md = "# Checking Accounts\n\nFree Checking\n\nNo monthly fees and no minimum balance.\n\nPremier Checking\n\nA $10 monthly fee applies.\n"
+        a = build(("s1", "2026-01-10", [page("/personal/checking", "Checking", md)])).answer("Is there a monthly fee on Free Checking?")
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("No monthly fees", a.text)
+
+    def test_minimum_for_a_named_product_is_not_taken_from_a_sibling(self):
+        md = "# Checking\n\n## Free Checking\n\n$25 minimum deposit to open.\n\n## Premier Checking\n\nEarn dividends on every dollar.\n"
+        ks = build(("s1", "2026-01-10", [page("/personal/checking", "Checking", md)]))
+        a = ks.answer("What is the minimum deposit to open Premier Checking?")
+        self.assertFalse(a.confident, a.text)
+        self.assertNotIn("$25", a.text)
+        b = ks.answer("What is the minimum deposit to open Free Checking?")
+        self.assertTrue(b.confident, b.text)
+        self.assertIn("$25", b.text)
+
+    def test_business_account_is_not_substituted(self):
+        personal = "# Checking\n\n## Free Checking\n\nA simple account with a debit card.\n"
+        business = "# Business Checking\n\n## Business Free Checking\n\nNo monthly fee for the first 200 items.\n"
+        ks = build(("s1", "2026-01-10", [page("/personal/checking", "Checking", personal), page("/business/checking", "Business Checking", business)]))
+        a = ks.answer("Is there a monthly fee on Free Checking?")
+        self.assertFalse(a.confident, a.text)
+        self.assertNotIn("200", a.text)
+
+
 if __name__ == "__main__":
     unittest.main()
