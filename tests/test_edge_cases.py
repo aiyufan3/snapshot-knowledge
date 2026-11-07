@@ -510,5 +510,87 @@ class EffectiveDateScopeTests(unittest.TestCase):
         self.assertIn("2026-01-10", a.text)
 
 
+class RevocationGuardTests(unittest.TestCase):
+    """A withdrawal notice counts only when it is affirmative, in force, and about the product asked for;
+    then it binds values that are still published as well as values from removed pages."""
+
+    Q = "What is the 6-month Alpha certificate APY?"
+
+    def setUp(self):
+        self.alpha = page("/personal/alpha", "Alpha certificates", table("6-month Alpha certificate", 3, "01/01/2026", heading="Alpha certificates"))
+        self.rates = page("/rates", "Rates", table("12-month certificate", 2, "01/01/2026"))
+
+    def notice(self, text, fetched="2026-03-15T08:00:00Z"):
+        return page("/newsroom/alpha", "Notice", f"# Notice\n\nMarch 2, 2026\n\n{text}\n", fetched=fetched)
+
+    def ghost(self, text, day="2026-03-15"):
+        return build(("s1", "2026-01-10", [self.alpha, self.rates]), ("s2", day, [self.rates, self.notice(text)]))
+
+    def test_active_voice_notice_blocks_a_removed_page(self):
+        a = self.ghost("We no longer offer Alpha certificates. These certificates are permanently discontinued.").answer(self.Q)
+        self.assertFalse(a.confident, a.text)
+        self.assertNotIn("3%", a.text)
+        self.assertIn("3%", a.conflict_note or "")
+
+    def test_notice_binds_a_value_that_is_still_published(self):
+        ks = build(("s1", "2026-01-10", [self.alpha, self.rates, self.notice("The Alpha certificate has been discontinued and is no longer offered.", fetched="2026-01-10T08:00:00Z")]))
+        a = ks.answer(self.Q)
+        self.assertFalse(a.confident, a.text)
+        self.assertNotIn("3%", a.text)
+        self.assertIn("3%", a.conflict_note or "")
+        self.assertIn(SITE + "/newsroom/alpha", [s.url for s in a.sources])
+        yes = ks.answer("Do any 6-month Alpha certificate tiers pay 3% APY?")
+        self.assertFalse(yes.confident, yes.text)
+        self.assertFalse(yes.text.startswith("Yes"), yes.text)
+
+    def test_negated_notice_is_not_a_withdrawal(self):
+        a = self.ghost("The Alpha certificate has not been discontinued and remains available.").answer(self.Q)
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("3%", a.text)
+
+    def test_future_dated_notice_applies_only_from_its_date(self):
+        ks = self.ghost("The Alpha certificate will be discontinued effective March 1, 2026.", day="2026-01-20")
+        a = ks.answer(self.Q)
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("3%", a.text)
+        a = ks.answer(self.Q, as_of="2026-03-05")
+        self.assertFalse(a.confident, a.text)
+        self.assertNotIn("3%", a.text)
+
+    def test_historical_question_precedes_the_notice(self):
+        ks = self.ghost("The Alpha certificate has been discontinued and is no longer offered.")
+        a = ks.answer(self.Q, as_of="2026-02-01")
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("3%", a.text)
+        self.assertFalse(ks.answer(self.Q).confident)
+
+    def test_another_products_notice_does_not_apply(self):
+        text = "The Beta certificate has been discontinued and is no longer offered."
+        for ks in (self.ghost(text), build(("s1", "2026-01-10", [self.alpha, self.rates, self.notice(text, fetched="2026-01-10T08:00:00Z")]))):
+            a = ks.answer(self.Q)
+            self.assertTrue(a.confident, a.text)
+            self.assertIn("3%", a.text)
+
+    def test_named_notice_does_not_block_the_generic_question(self):
+        ks = build(("s1", "2026-01-10", [page("/rates", "Rates", table("6-month certificate", 2, "01/01/2026")),
+                                         self.notice("The Alpha certificate has been discontinued.", fetched="2026-01-10T08:00:00Z")]))
+        a = ks.answer("What is the 6-month certificate APY?")
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("2%", a.text)
+
+    def test_family_wide_notice_applies_to_the_named_product(self):
+        ks = build(("s1", "2026-01-10", [self.alpha, self.notice("Certificates are no longer offered; existing certificates run to maturity.", fetched="2026-01-10T08:00:00Z")]))
+        a = ks.answer(self.Q)
+        self.assertFalse(a.confident, a.text)
+        self.assertNotIn("3%", a.text)
+
+    def test_penalty_and_maturity_wording_is_not_a_withdrawal(self):
+        md = table("6-month certificate", 3, "01/01/2026") + "\nCertificates withdrawn before maturity are subject to a penalty. A certificate is closed at maturity unless renewed. The index may no longer be available.\n"
+        ks = build(("s1", "2026-01-10", [page("/personal/certificates", "Certificates", md)]))
+        a = ks.answer("What is the 6-month certificate APY?")
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("3%", a.text)
+
+
 if __name__ == "__main__":
     unittest.main()

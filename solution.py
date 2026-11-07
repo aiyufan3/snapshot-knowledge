@@ -229,11 +229,20 @@ MUST_MATCH_QUALIFIERS = [  # question wording that names a product type a row mu
     (r"\bbalance transfer\b", r"balance transfer|transfer"),
 ]
 DEFAULT_REFUSAL = "I don't know. That isn't listed on the website. Please contact us."
-# Wording that says a product or offer has been withdrawn (checked in the *current* snapshot
-# before a page that disappeared is allowed to answer).
-REVOKED_RE = re.compile(
-    r"\b(?:discontinued|no longer (?:offered|available|accepting|accepts|open)|has been retired|was retired|retired|"
-    r"withdrawn|phased out|sunset|ceased|closed to new|has (?:been )?closed|is closed|replaced by)\b", re.I)
+# Wording that says a product has been withdrawn.  Only the predicate is matched here; _revocation
+# checks that it is affirmative, in force on the reference day, and that its subject (passive voice)
+# or object (active voice) is the product asked about and not another one.
+REVOKED_PRED_RE = re.compile(
+    r"\b(?:discontinued|retired|phased out|sunset|closed to new (?:members|accounts|business|applications)|"
+    r"no longer (?:be\s+)?(?:offered|available|accepted|sold|supported|open|offer|offers|offering|accept|accepts|accepting|"
+    r"provide|provides|providing|sell|sells|selling)|stopped offering|ceased offering|withdrawn from (?:sale|the market))\b", re.I)
+REVOKED_ACTIVE_PRED_RE = re.compile(r"^no longer (?:offer(?:s|ing)?|accept(?:s|ing)?|provid(?:e|es|ing)|sell(?:s|ing)?)\b|^(?:stopped|ceased) offering", re.I)
+PASSIVE_AUX = {"is", "are", "was", "were", "be", "been", "being", "has", "have", "had", "now", "permanently", "officially"}
+ACTIVE_SUBJECTS = {"we", "union", "bank", "company", "institution", "cooperative"}
+NEGATION_WORDS = {"not", "never", "no", "nor", "neither"}
+# Words that distinguish a product variant; a notice that names one the question did not is about something else.
+VARIANT_WORDS = {"jumbo", "special", "business", "commercial", "ira", "roth", "traditional", "intro", "introductory",
+                 "youth", "student", "senior", "premier", "platinum", "classic", "rewards", "secured", "promotional"}
 # Question intents whose answer must carry specific evidence (otherwise confidence is lowered).
 ELIGIBILITY_Q_RE = re.compile(r"\beligib|\bqualif|\bwho can (?:join|open|become|apply|get)|\brequirements? (?:to|for) (?:join|membership|open)", re.I)
 ELIGIBILITY_EVIDENCE_RE = re.compile(
@@ -1056,25 +1065,20 @@ class Knowledge:
             return self._refuse("I don't know. No website content has been loaded. Please contact us.")
         raw = question or ""
         q = _expand_question(raw)
+        ref_day = str(as_of)[:10] if as_of else snap.taken_on
         ans, cov = self._answer_from(snap, q, raw, as_of)
         if ans is None or not ans.confident or cov < 1.0:
             ghost = self._ghost(snap)
             if ghost is not None:
                 g, gcov = self._answer_from(ghost, q, raw, as_of)
                 if g is not None and g.confident and (ans is None or not ans.confident or gcov > cov):
-                    revoked = self._revocation(snap, q)
+                    revoked = self._revocation(snap, q, ref_day)
                     if revoked is not None:
                         # The current snapshot says the product is gone: report that, and keep the
                         # last observed value apart from the current status.
-                        blk, sentence, phrase = revoked
-                        ans = Answer(
-                            text=(f"I can't give a current value: the website states that the {phrase} "
-                                  "has been discontinued or is no longer offered."),
-                            sources=[self._src(blk.get("snapshot_id", snap.snapshot_id), blk["url"], sentence)],
-                            confident=False,
-                            conflict_note=(f"Last published before the page was removed: {g.text} "
-                                           f"(sources: {', '.join(f'{s.url} @ {s.snapshot_id}' for s in g.sources)})")[:600],
-                        )
+                        ans = self._revoked_answer(snap, revoked, (
+                            f"Last published before the page was removed: {g.text} "
+                            f"(sources: {', '.join(f'{s.url} @ {s.snapshot_id}' for s in g.sources)})"))
                     else:
                         g.text += (
                             " Note: this comes from a page that is no longer on the website; "
@@ -1115,10 +1119,10 @@ class Knowledge:
         if re.search(r"\b(do|does|is|are)\s+(any|there|all)\b", q) and PCT_RE.search(q):
             r = self._answer_rate_yesno(snap, q, ref_day, raw)
             if r is not None:
-                return r, 1.0
+                return self._guard_revoked(snap, q, ref_day, r), 1.0
         if self._is_rate_question(q):
             r = self._answer_rates(snap, q, ref_day, raw)
-            return (r, 1.0) if r is not None else (self._refuse(_refuse_line(q)), 0.0)
+            return (self._guard_revoked(snap, q, ref_day, r), 1.0) if r is not None else (self._refuse(_refuse_line(q)), 0.0)
         r, cov = self._answer_passage(snap, q, ref_day)
         return (r, cov) if r is not None else (self._refuse(DEFAULT_REFUSAL), 0.0)
 
@@ -1648,22 +1652,33 @@ class Knowledge:
         return Answer(text=f"You can reach us through the contact page ({page['url']}).",
                       sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], _clean_inline(page["text"])[:200])], confident=True)
 
-    def _revocation(self, snap: SnapIndex, q: str):
-        """Does the selected snapshot say the product named in the question was withdrawn?
-        Returns (block, sentence, phrase) or None.  Every product word of the question must
-        appear in the sentence that carries the withdrawal wording."""
+    def _revocation(self, snap: SnapIndex, q: str, ref_day: str = ""):
+        """Does the selected snapshot say, affirmatively and as of ``ref_day``, that the product named
+        in the question was withdrawn?  Returns (block, sentence, phrase) or None.  The withdrawal
+        predicate must be about the product asked for: its subject (passive voice) or object (active
+        voice) carries every product word of the question - or the question's product family word
+        alone, for a notice about the whole family - and names no other product or variant."""
+        ref_day = ref_day or snap.taken_on
         skip = RATE_WORDS | GENERIC_NAME_WORDS | ENTITY_SKIP | INSTITUTION_WORDS
-        ents = {t for t in _content(q, self.stop) if not t.isdigit() and t not in skip}
+        q_toks = set(_content(q, self.stop))
+        ents = {t for t in q_toks if not t.isdigit() and t not in skip}
         if not ents:
             return None
+        family_toks = {_stem(w) for w in FAMILY_WORDS.get(_wants_product(q) or "other", set())} & q_toks
+        def blocks_with(toks):
+            ids = None
+            for t in sorted(toks):
+                found = {i for i, _tf in snap.postings.get(t, [])}
+                ids = found if ids is None else ids & found
+            return ids or set()
+        cands = blocks_with(ents) | (blocks_with(family_toks) if family_toks else set())
         best = None
-        for blk in snap.blocks:
-            if not (ents <= (blk["body"] | set(_content(blk["heading"], self.stop)))):
-                continue
-            if not REVOKED_RE.search(blk["text"]):
+        for i in sorted(cands):
+            blk = snap.blocks[i]
+            if not REVOKED_PRED_RE.search(blk["text"]):
                 continue
             for sent in re.split(r"(?<=[.!?])\s+", blk["text"]):
-                if REVOKED_RE.search(sent) and ents <= set(_content(sent, self.stop)):
+                if self._revokes(snap, sent, ents, q_toks, family_toks, ref_day):
                     cand = (blk["pub"], blk)
                     if best is None or cand[0] > best[0][0]:
                         best = (cand, sent.strip())
@@ -1674,6 +1689,63 @@ class Knowledge:
         words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9$'\-]*", q) if _stem(w.lower()) in ents or w.lower() in ents]
         phrase = " ".join(words) if words else "product"
         return blk, sent, phrase
+
+    def _revokes(self, snap: SnapIndex, sent: str, ents: set, q_toks: set, family_toks: set, ref_day: str) -> bool:
+        """One sentence: an affirmative, in-force withdrawal whose subject or object is the product asked about."""
+        effective = _effective_dates(sent)
+        if effective and max(effective) > ref_day:
+            return False  # "effective <date>" still ahead: a scheduled withdrawal
+        for m in REVOKED_PRED_RE.finditer(sent):
+            before = sent[: m.start()].split()
+            after = sent[m.end():].split()
+            pre = [w.lower().strip(",.;:()\"'") for w in before[-4:]]
+            if any(w in NEGATION_WORDS or w.endswith("n't") for w in pre):
+                continue  # "has not been discontinued"
+            if "will" in pre or "would" in pre:  # future tense: in force only once a stated date has passed
+                dates = [d for d in (_parse_date(x.group(0)) for x in ANY_DATE_RE.finditer(sent)) if d]
+                if not dates or max(dates) > ref_day:
+                    continue
+            active = bool(REVOKED_ACTIVE_PRED_RE.search(m.group(0))) or (
+                bool(set(pre) & ACTIVE_SUBJECTS) and not (pre and pre[-1] in PASSIVE_AUX - {"has", "have", "had"}))
+            window = after[:8] if active else before[-8:]
+            win_toks = set(_content(" ".join(window), self.stop))
+            if not (ents <= win_toks or (family_toks and family_toks <= win_toks)):
+                continue
+            extra = False
+            for w in window:
+                core = w.strip(",.;:()\"'")
+                toks = _content(core, self.stop)
+                if not toks or toks[0] in q_toks:
+                    continue
+                t = toks[0]
+                capitalised = core[:1].isupper() and not sent.startswith(core)
+                if capitalised or t in snap.vocab or t in VARIANT_WORDS:
+                    extra = True  # the notice names a product or variant the question did not
+                    break
+            if extra:
+                continue
+            return True
+        return False
+
+    def _revoked_answer(self, snap: SnapIndex, rev, note: Optional[str]) -> Answer:
+        blk, sentence, phrase = rev
+        return Answer(
+            text=(f"I can't give a current value: the website states that the {phrase} "
+                  "has been discontinued or is no longer offered."),
+            sources=[self._src(blk.get("snapshot_id", snap.snapshot_id), blk["url"], sentence)],
+            confident=False, conflict_note=(note or None) and note[:600],
+        )
+
+    def _guard_revoked(self, snap: SnapIndex, q: str, ref_day: str, ans: Optional[Answer]) -> Optional[Answer]:
+        """A value still published in the selected snapshot does not override an in-force notice that the
+        product was withdrawn: the notice is reported and the published value is kept in conflict_note."""
+        if ans is None or not ans.confident:
+            return ans
+        rev = self._revocation(snap, q, ref_day)
+        if rev is None:
+            return ans
+        note = f"Still published in this snapshot: {ans.text} (sources: {', '.join(f'{s.url} @ {s.snapshot_id}' for s in ans.sources)})"
+        return self._revoked_answer(snap, rev, note)
 
     # --------------------------------------------------------------- extractors
     def _answer_identifier(self, snap: SnapIndex, q: str) -> Answer:
