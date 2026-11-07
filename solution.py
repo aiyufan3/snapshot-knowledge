@@ -121,6 +121,44 @@ EXPIRED_RE = re.compile(
 EXAMPLE_RE = re.compile(r"\b(example|if you borrow(?:ed)?|illustrative|monthly payment|would be)\b", re.I)
 INTRO_HEADER_RE = re.compile(r"intro|promo|\b(?:1st|first)\s+\d+\s+months?\b|for the first\b", re.I)
 AFTER_INTRO_RE = re.compile(r"\bafter\b|\bthereafter\b|\bongoing\b|\bstandard\b|\bregular\b", re.I)
+# Percentages in sentences that are not the price of a product: a loan *type* ("fixed-rate"), an
+# increment or cap ("add 1%", "adjust up to 2%", "within 6%"), a share of something ("20% of the
+# price", "80% area median income", "75% loan to value"), a down payment, or a "rate" that is not
+# a price (tax rate, contribution rate).  Such sentences never become rate rows.
+RATE_COMPOUND_RE = re.compile(r"\b[a-z]+-rates?\b")
+NON_RATE_PCT_RE = re.compile(
+    r"\b(?:add|adds|adding|adjust\w*|increas\w*|decreas\w*|reduc\w*|discount\w*|lower\w*|rais\w*|within|below|above|plus|minus|off)"
+    r"\s+(?:\w+\s+){0,3}?\d+(?:\.\d+)?\s*%"
+    r"|\d+(?:\.\d+)?\s*%(?:\s*(?:[-–—]|to)\s*\d+(?:\.\d+)?\s*%)?\s*(?:of\b|down\b|financing|loan[- ]to[- ]value|ltv\b|area median)"
+    r"|\bdown ?payments?\b|\bloan[- ]to[- ]value\b|\bltv\b",
+    re.I)
+NON_PRODUCT_RATE_RE = re.compile(
+    r"\b(?:tax|contribution|inflation|unemployment|exchange|growth|response|approval|conversion|vacancy|default|success|"
+    r"graduation|participation|utili[sz]ation|turnover|error|crime|birth|mortality)\s+rates?\b", re.I)
+FEE_Q_RE = re.compile(r"\bfees?\b|\bcosts?\b|\bprices?\b|\bhow much\b|\bcharges?\b")
+AMOUNT_RE = re.compile(r"\$\s?\d|\d\s?%")
+PHONE_RE = re.compile(r"\(?\b\d{3}\)?[-. ]\d{3}[-. ]\d{4}\b")
+# Asking how to reach the organisation (not a procedure, not a product).
+CONTACT_Q_RE = re.compile(
+    r"\bhow (?:do|can|could|would|should|might) (?:i|we|one|someone) (?:contact|reach|call|phone|email|get in touch with|get a?\s?hold of|talk to|speak (?:to|with))\b"
+    r"|\b(?:what(?:'s| is| are)|which|do you have|is there|give me|tell me)\b[^.?]{0,40}?(?<!my )\b(?:phone|telephone|contact) numbers?\b"
+    r"|\b(?:what|which) number (?:do|can|should) (?:i|we) call\b"
+    r"|\b(?:customer|member) (?:service|services|support|care)\b[^.?]{0,40}\b(?:phone|number|call|contact|reach)\b"
+    r"|\b(?:phone|number|call|contact|reach)\b[^.?]{0,40}\b(?:customer|member) (?:service|services|support|care)\b", re.I)
+# A paragraph answers a fee question when it states an amount or says there is none.
+FEE_EVIDENCE_RE = re.compile(
+    r"\$\s?\d|\d\s?%|\bno (?:\w+ ){0,2}fees?\b|\bfree\b|\bno (?:charge|cost)\b|\bat no (?:charge|cost)\b|\bwaived\b", re.I)
+# An eligibility rule may name an area ("our charter area") without saying where it is; the page's
+# own sentence that lists the places served completes it.
+SCOPE_TERM_RE = re.compile(
+    r"\b(?:charter area|field of membership|service area|membership area|our (?:area|communities|region|footprint)|"
+    r"(?:area|communities|counties|region) (?:we|it) serves?|eligible (?:counties|communities|area))\b", re.I)
+LOCATE_RE = re.compile(
+    r"\b(?:find us|located|serve[sd]?|serving|operat\w+|branches|offices|communities|counties|throughout|across|"
+    r"residents? of|lives? (?:in|or work in)|headquartered)\b", re.I)
+_PLACE = r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?"
+SCOPE_LIST_RE = re.compile(
+    rf"\b(?:in|of|across|throughout|within)\s+({_PLACE}(?:,\s*{_PLACE})*,?\s+(?:and|or|&)\s+{_PLACE}|{_PLACE}(?:,\s*{_PLACE}){{2,}})")
 
 
 def _is_intro_header(header: str) -> bool:
@@ -260,6 +298,9 @@ def _content(text: str, stop: set) -> list[str]:
     return [_stem(t) for t in _tokens(text) if t not in stop and len(t) > 1]
 
 
+BUSINESS_TOKEN = _stem("business")  # heading tokens are stored stemmed
+
+
 def _clean_inline(text: str) -> str:
     t = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text or "")
     t = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", t)
@@ -391,6 +432,17 @@ def _family_of(text: str) -> str:
         if re.search(pat, low):
             return fam
     return "other"
+
+
+def _block_family(blk: dict) -> str:
+    """The product a paragraph is about: named by its heading, or by a short leading label
+    ("High-Yield Savings: Dividends and APY accurate as of ...")."""
+    fam = _family_of(blk["heading"])
+    if fam == "other":
+        head, sep, _rest = blk["text"].partition(":")
+        if sep and len(head) <= 60:
+            fam = _family_of(head)
+    return fam
 
 
 def _url_product_name(url: str) -> str:
@@ -853,15 +905,19 @@ class Knowledge:
     def _maybe_line_fact(self, idx, pinfo, heading, labels, line):
         if line.count("%") > 3 or EXAMPLE_RE.search(line):
             return
+        if len(PCT_EXPR_RE.findall(line)) != 1:
+            return  # two percentages in one sentence (a dividend rate and its APY, a promotional and an ongoing rate) are not one fact
+        if NON_RATE_PCT_RE.search(line) or NON_PRODUCT_RATE_RE.search(line):
+            return  # an increment, cap, share or down payment, or a "rate" that is not a price
         m = PCT_EXPR_RE.search(line)
-        if not m:
-            return
         prefix = _clean_inline(line[:m.start()]).strip(" :-*•")
         prefix = re.sub(r"\s+(?:of|at|is|as low as|starting at|from)$", "", prefix, flags=re.I)
         if len(prefix) < 3 or len(prefix) > 160 or not re.search(r"[A-Za-z]", prefix):
             return
         prose = not _product_like(prefix) or len(_tokens(prefix)) > 6
-        low = line.lower()
+        if prose and not _product_like(heading or (labels[-1] if labels else "")):
+            return  # a sentence is a product statement only under a heading that names the product
+        low = RATE_COMPOUND_RE.sub(" ", line.lower())  # "fixed-rate loan" names a loan type, not a rate
         if re.search(r"\bapy\b|annual percentage yield", low):
             kind = "apy"
         elif re.search(r"\bapr\b|annual percentage rate", low):
@@ -897,6 +953,7 @@ class Knowledge:
             "pub": pinfo["pub"], "fetched_at": pinfo["fetched_at"], "priority": pinfo["priority"],
             "tf": Counter(toks), "len": len(toks), "norm": clean.lower()[:160], "dup": 1,
             "lead": lead, "pos": pinfo["_blocks"], "title_toks": pinfo["title_toks"], "body": set(body),
+            "i": len(idx.blocks),
         })
 
     def _finish_index(self, idx: SnapIndex) -> None:
@@ -905,6 +962,8 @@ class Knowledge:
         total = 0
         for i, b in enumerate(idx.blocks):
             b["dup"] = dup[b["norm"]]
+            b["head"] = set(_content(b["heading"], self.stop))
+            b["fam"] = _block_family(b)
             total += b["len"]
             for t, tf in b["tf"].items():
                 df[t] += 1
@@ -1010,6 +1069,10 @@ class Knowledge:
                 return r, 1.0
         if re.search(r"\baddress\b|\blocated\b|\bwhere is\b|\bwhere's\b", q) and re.search(r"branch|office|location", q):
             r = self._answer_address(snap, raw)
+            if r is not None:
+                return r, 1.0
+        if CONTACT_Q_RE.search(q):
+            r = self._answer_contact(snap, q)
             if r is not None:
                 return r, 1.0
         if _is_link_question(q):
@@ -1303,13 +1366,20 @@ class Knowledge:
         return Answer(text=text[:3000], sources=sources, confident=True)
 
     # ---------------------------------------------------------------- passages
-    def _search_blocks(self, snap: SnapIndex, q_tokens: list[str], k: int = 40):
+    def _search_blocks(self, snap: SnapIndex, q_tokens: list[str], k: int = 40, business: bool = False):
         scores: dict = defaultdict(float)
         matched: dict = defaultdict(set)
         body_hit: dict = defaultdict(set)
         k1, b = 1.2, 0.4
         distinct = set(q_tokens)
         q_family = _family_of(" ".join(q_tokens))
+        # Words that name the product asked about ("free" in "Free Checking"): a paragraph about
+        # another product of the same family is a weaker match, as is a business product when the
+        # question is not about business.
+        named = set()
+        if q_family != "other":
+            named = {t for t in distinct if t in snap.vocab and t not in RATE_WORDS and t not in GENERIC_NAME_WORDS
+                     and t not in ENTITY_SKIP and t not in FAMILY_WORDS.get(q_family, set())}
         weights = {t: (1.0, t) for t in sorted(distinct)}
         for t in sorted(distinct):  # fixed order so a shared synonym always maps to the same origin
             for syn in SYNONYMS.get(t, []):
@@ -1328,12 +1398,16 @@ class Knowledge:
         ranked = []
         for i, s in scores.items():
             blk = snap.blocks[i]
-            if blk["dup"] >= 4:
-                s *= 0.5
+            if blk["dup"] >= 4 and not (blk["priority"] >= 2 and AMOUNT_RE.search(blk["text"])):
+                s *= 0.5  # repeated text is boilerplate, unless it is disclosure text with amounts shared by product pages
             s *= 1 + 0.2 * (blk["priority"] - 1)  # product/rate pages over articles and promos
             s *= 0.5 + 0.5 * len(matched[i]) / max(1, len(distinct))
-            head_fam = _family_of(blk["heading"])
-            if head_fam != "other" and head_fam != q_family:  # section about a product the question did not ask about
+            blk_fam = blk["fam"]
+            if blk_fam != "other" and blk_fam != q_family:  # paragraph about a product the question did not ask about
+                s *= 0.3 if q_family != "other" else 0.6
+            if named and not named <= (blk["body"] | blk["head"]):
+                s *= 0.5
+            if not business and (BUSINESS_TOKEN in blk["head"] or "/business" in blk["url"].lower()):
                 s *= 0.6
             s *= 1 + 0.08 * min(3, len(distinct & blk.get("title_toks", set())))
             ranked.append((s, i, matched[i], body_hit[i]))
@@ -1344,11 +1418,13 @@ class Knowledge:
         q_tokens = [t for t in _content(q, self.stop)]
         if not q_tokens:
             return None, 0.0
-        ranked = self._search_blocks(snap, q_tokens)
+        procedural = bool(re.search(r"\bhow (?:can|do|would|could|should) i\b|\bhow to\b", q))
+        ranked = self._search_blocks(snap, q_tokens, business=bool(re.search(r"\bbusiness\b|\bcommercial\b", q)))
         if not ranked:
-            return None, 0.0
-        if re.search(r"\bfees?\b|\bcosts?\b|\bprices?\b|\bhow much\b|\bcharges?\b", q):
-            ranked = [x for x in ranked if re.search(r"\$\s?\d|\d\s?%", snap.blocks[x[1]]["text"])]
+            return (self._contact_fallback(snap), 0.0) if procedural else (None, 0.0)
+        fee_q = bool(FEE_Q_RE.search(q))
+        if fee_q:  # a fee answer states an amount or says there is none
+            ranked = [x for x in ranked if FEE_EVIDENCE_RE.search(snap.blocks[x[1]]["text"])]
             if not ranked:
                 return None, 0.0
         best_s = ranked[0][0]
@@ -1358,7 +1434,7 @@ class Knowledge:
         if not good:
             top = ranked[0]
             if len(top[2]) < need or top[0] < 1.0:
-                return None, 0.0
+                return (self._contact_fallback(snap), 0.0) if procedural else (None, 0.0)
             good = [top]
         good.sort(key=lambda x: (-x[0], x[1]))
         if snap.blocks[good[0][1]]["pub"]:  # dated articles: prefer the most recent among near-equal matches
@@ -1386,28 +1462,105 @@ class Knowledge:
                 else:
                     confident = False
         coverage = len(m0) / max(1, len(distinct))
-        if re.search(r"\bhow (?:can|do|would|could|should) i\b|\bhow to\b", q) and coverage < 0.8:
+        if procedural and coverage < 0.8:
             return self._contact_fallback(snap), 0.0
-        if re.search(r"\bfees?\b|\bcosts?\b|\bprices?\b|\bhow much\b|\bcharges?\b", q) and coverage < 0.99:
+        if fee_q and coverage < 0.99:
             return None, 0.0
         text = _compose_block(blk)
         sid = blk.get("snapshot_id", snap.snapshot_id)
-        return Answer(text=text, sources=[self._src(sid, blk["url"], blk["text"])], confident=confident), coverage
+        sources = [self._src(sid, blk["url"], blk["text"])]
+        if text.rstrip().endswith(":"):  # a paragraph that introduces a list is incomplete without the list
+            nxt = self._next_block(snap, blk)
+            if nxt is not None and len(nxt["text"]) <= 600:
+                text = f"{text} {nxt['text']}"
+                sources.append(self._src(nxt.get("snapshot_id", snap.snapshot_id), nxt["url"], nxt["text"]))
+        if confident and ELIGIBILITY_Q_RE.search(q):
+            scope = self._scope_sentence(snap, blk)
+            if scope is not None:
+                sent, sblk = scope
+                text = f"{text} On where that applies, the website says: {sent}"
+                sources.append(self._src(sblk.get("snapshot_id", snap.snapshot_id), sblk["url"], sent))
+        return Answer(text=text, sources=sources, confident=confident), coverage
 
-    def _contact_fallback(self, snap: SnapIndex) -> Optional[Answer]:
-        """Procedural question the pages do not answer: point to the site's own contact channel."""
+    def _next_block(self, snap: SnapIndex, blk: dict) -> Optional[dict]:
+        """The paragraph that follows ``blk`` on the same page, if any."""
+        j = blk.get("i", -1) + 1
+        if 0 < j < len(snap.blocks):
+            nxt = snap.blocks[j]
+            if nxt["url"] == blk["url"] and nxt.get("pos") == blk.get("pos", 0) + 1:
+                return nxt
+        return None
+
+    def _scope_sentence(self, snap: SnapIndex, blk: dict):
+        """An eligibility rule that refers to an area by name ("within our charter area") does not
+        say where that is.  Return (sentence, block) for the sentence that lists the places served,
+        from the same page first and otherwise from the site's membership pages only."""
+        if not SCOPE_TERM_RE.search(f"{blk['heading']} {blk['text']}") or SCOPE_LIST_RE.search(blk["text"]):
+            return None
+
+        def first_sentence(blocks):
+            for b in blocks:
+                for sent in re.split(r"(?<=[.!?])\s+", b["text"]):
+                    if len(sent) <= 300 and LOCATE_RE.search(sent) and SCOPE_LIST_RE.search(sent):
+                        return sent.strip(), b
+            return None
+
+        found = first_sentence([b for b in snap.blocks if b["url"] == blk["url"]])
+        if found is None:
+            found = first_sentence([b for b in snap.blocks
+                                    if re.search(r"join|member|eligib", f"{urlparse(b['url']).path} {b['title']}", re.I)])
+        return found
+
+    def _contact_channel(self, snap: SnapIndex):
+        """The site's own contact page and the phone number it publishes: (phone, page, line) or None."""
         pages = [p for p in snap.pages if re.search(r"/contact(?:-us)?/?$", urlparse(p["url"]).path) or "contact" in p["title"].lower()]
         if not pages:
             return None
         page = max(pages, key=lambda p: p["priority"])
-        phones = Counter(re.findall(r"\b\d{3}-\d{3}-\d{4}\b", page["text"]))
+        phones = Counter(m.group(0) for m in PHONE_RE.finditer(page["text"]))
         if not phones:
             return None
         phone = phones.most_common(1)[0][0]
         line = next((l for l in page["text"].splitlines() if phone in l), phone)
+        return phone, page, _clean_inline(line)
+
+    def _contact_fallback(self, snap: SnapIndex) -> Optional[Answer]:
+        """Procedural question the pages do not answer: point to the site's own contact channel."""
+        channel = self._contact_channel(snap)
+        if channel is None:
+            return None
+        phone, page, line = channel
         text = (f"I don't know how to do that from the website alone. Please contact us at {phone} "
                 f"or through the contact page ({page['url']}).")
-        return Answer(text=text, sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], _clean_inline(line))], confident=False)
+        return Answer(text=text, sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], line)], confident=False)
+
+    def _answer_contact(self, snap: SnapIndex, q: str) -> Optional[Answer]:
+        """How to reach the organisation.  A branch's own number is given only when it is listed
+        with that branch; otherwise the contact page's number is the answer."""
+        branch = _named_branch(q)
+        if not branch:
+            m = re.search(r"\b([a-z0-9][a-z0-9 .'\-]{1,40}?)\s+branch(?:'s)?\s+(?:phone|telephone|number)", q)
+            branch = m.group(1).strip() if m else ""
+        if branch:
+            btoks = [t for t in _tokens(branch) if t not in self.stop and t not in {"branch", "office", "location"}]
+            for page in sorted(snap.pages, key=lambda p: -p["priority"]):
+                lines = page["text"].splitlines()
+                for li, line in enumerate(lines):
+                    m = PHONE_RE.search(line)
+                    if not m:
+                        continue
+                    ctx = " ".join(lines[max(0, li - 6): li + 1]).lower()
+                    if btoks and all(t in _tokens(ctx) for t in btoks):
+                        return Answer(text=f"The {branch} branch's phone number is {m.group(0)}.",
+                                      sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], _clean_inline(line))],
+                                      confident=True)
+            return self._refuse(f"I don't know. A phone number for the {branch} branch isn't listed on the website. Please contact us.")
+        channel = self._contact_channel(snap)
+        if channel is None:
+            return None
+        phone, page, line = channel
+        return Answer(text=f"You can reach us by phone at {phone} or through the contact page ({page['url']}).",
+                      sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], line)], confident=True)
 
     def _revocation(self, snap: SnapIndex, q: str):
         """Does the selected snapshot say the product named in the question was withdrawn?

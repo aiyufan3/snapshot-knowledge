@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release check for the public candidate.
+"""Release check for the publishable tree.
 
 Scans content that is about to be published for material that must stay private:
 

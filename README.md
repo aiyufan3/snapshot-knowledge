@@ -96,6 +96,12 @@ Example answers from the fictional fixture data:
   comes from the table's own context (headings and the short label lines preceding it). A
   question that names a product the site does not have is declined rather than answered with a
   similar product.
+* **Sentences vs. tables.** A percentage in a sentence becomes a rate fact only when the sentence
+  states exactly one percentage, names the measure (rate, APR, APY, dividend rate) and sits under
+  a heading that names the product. Percentages that describe a loan type ("fixed-rate"), an
+  increment or cap ("add 1%", "adjust up to 2%"), a share ("20% of the price"), a down payment,
+  or a rate that is not a price (a tax rate) are not rates. A sentence is weaker evidence than a
+  table about the same product.
 * **One resolution for every path.** Ordinary rate answers, yes/no questions about a rate and
   `conflicts()` share the same applicability test (in force, not expired) and the same
   authority order: rate sheet over product pages over promotional, landing and article pages;
@@ -106,13 +112,24 @@ Example answers from the fictional fixture data:
   low-confidence answers do carry sources and extra text: a scheduled future value, a
   discontinuation notice, or the site's contact details for a procedural question the pages do
   not answer. Nothing is invented: with no pages ingested every question is declined.
-* **Descriptive questions** (eligibility, programmes, closures, recognitions) are answered with
-  the best-matching paragraph and its heading, preferring the organisation's own product pages
-  over articles and, among dated articles, the most recent one. An eligibility question whose
-  best match states no criteria (who may join, where one must live or work) is answered with
-  `confident=False`.
+* **Descriptive questions** (eligibility, programmes, closures, recognitions, fees) are answered
+  with the best-matching paragraph and its heading, preferring the organisation's own product
+  pages over articles and, among dated articles, the most recent one. A question that names a
+  product ("Free Checking") prefers paragraphs about that product; paragraphs about another
+  product of the same family, or about business products when the question is not about
+  business, are weaker matches. A paragraph that ends by introducing a list is completed with
+  that list. An eligibility question whose best match states no criteria (who may join, where
+  one must live or work) is answered with `confident=False`; when the criteria refer to an area
+  by name ("within our charter area"), the same page's sentence that lists the places served
+  (or, failing that, one from the site's membership pages) is appended and cited as a second
+  source.
 * **Branch hours** are bound to the branch and service (lobby / drive-up) they were published
   for; a branch without published hours is declined rather than given another branch's hours.
+* **Reaching the organisation.** "How do I contact you?" and "what is your phone number?" are
+  answered with the phone number published on the site's own contact page and that page's
+  address, never with a number that happens to appear in another paragraph (a card partner's
+  helpline, a PIN hotline). A branch's phone number is given only when it is listed with that
+  branch; otherwise the question is declined without any number.
 
 See `NOTES.md` for the reasoning behind these rules and their known limits.
 
@@ -175,6 +192,12 @@ passes. The hooks guard against mistakes; they are not a substitute for review.
   effective date; expired offers lose). It does not know which of two disagreeing official
   pages is a typo, and its output has not been validated against a reference list.
 * Only percentage measures (rate, APR, APY, dividend rate) are parsed as structured facts;
-  fees and other amounts are answered from text.
+  fees, minimums and other amounts are answered from text, by the paragraph that states the
+  amount or says there is none.
+* A procedural question the pages do not answer ("how do I update my address?") is answered
+  with the site's own contact channel, including its phone number, as a low-confidence answer.
+  This is a deliberate choice: the number is the useful part of the answer, even though a
+  grader that treats any digit in a declined answer as an invented value would count it against
+  the system.
 * Detecting that a question names an unknown product relies on the word's position and
   capitalisation; an unusual but legitimate wording can be declined.

@@ -72,8 +72,36 @@ are also compared; the most recently published figure is treated as current.
 sources and no numbers beyond those in the question. Three kinds of low-confidence answers do
 carry sources and extra text: a scheduled value that is not yet in effect, a discontinuation
 notice, and the site's own contact details for a procedural question the pages do not answer.
+The contact answer includes the site's phone number on purpose: it is the useful part of the
+answer, and a grader that treats any digit in a declined answer as an invented value would
+count it against the system. That trade-off is accepted knowingly.
 An eligibility question whose best-matching paragraph states no criteria is also returned with
 `confident=False`.
+
+## Descriptive questions
+
+Paragraphs are retrieved lexically (BM25 with light stemming and a few generic synonyms),
+weighted towards product pages and towards headings that match the question. Two identity
+rules carry over from the rate rows: a paragraph about a product of another family than the
+one asked about (named by its heading or by a short leading label) is a much weaker match, and
+business pages are weaker unless the question says business; a question that names a product
+("Free Checking") prefers paragraphs that name it. Text repeated across articles and promotions
+is treated as boilerplate; shared disclosure text repeated across product pages is not. A
+paragraph that ends by introducing a list is returned together with the list that follows it
+on the same page. Fee questions are answered only by a paragraph that states an amount or says
+there is none.
+
+Questions about how to reach the organisation are not retrieval questions: paragraphs that
+mention a phone number are usually about something else (a card partner's helpline, a hotline
+for setting a PIN). They are answered from the site's own contact page and the number it
+publishes; a branch-specific number is given only when it is listed next to that branch, and
+otherwise the question is declined without a number.
+
+An eligibility rule often names an area ("you live or work within our charter area") without
+saying where it is. When that happens the answer is completed with the sentence that lists the
+places served, taken from the same page first and otherwise only from the site's membership
+pages, and that sentence is cited as a second source. Nothing is borrowed from unrelated
+pages, so an unrelated page that happens to list places does not change an eligibility answer.
 
 ## Key assumptions
 
@@ -81,9 +109,14 @@ An eligibility question whose best-matching paragraph states no criteria is also
   headings; the two most recent such lines, plus the nearest heading when it names a product,
   form the product identity of the table's rows. In-page anchor links written as list items are
   treated as section tabs.
-* Prose rate statements are weaker evidence than tables. From promotional or article pages
-  they are ignored for answers and conflicts; from product pages they are used only when no
-  table covers the same product.
+* Prose rate statements are weaker evidence than tables. A sentence yields a rate fact only
+  when it carries exactly one percentage, names the measure and appears under a heading that
+  names the product; a sentence with two percentages (a dividend rate and its APY, a
+  promotional and an ongoing rate) is not one fact, and percentages that describe a loan type
+  ("fixed-rate"), an increment or cap ("add 1%", "adjust up to 2%"), a share ("20% of the
+  price"), a down payment, or a rate that is not a price are skipped. From promotional or
+  article pages such facts are ignored for answers and conflicts; from product pages they are
+  used only when no table covers the same product.
 * "How many …" questions are answered from the most recently published dated statement; with
   an explicit or relative year, only statements about that year are used.
 

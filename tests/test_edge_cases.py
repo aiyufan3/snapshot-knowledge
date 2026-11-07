@@ -242,5 +242,159 @@ class IntentEvidenceTests(unittest.TestCase):
         self.assertFalse(a.confident, a.text)
 
 
+class ProseStatementTests(unittest.TestCase):
+    """A percentage in a sentence is a product rate only when the sentence states one."""
+
+    HOME = (
+        "# Home Loans\n\n"
+        "| Loan | Rate | APR |\n| --- | --- | --- |\n"
+        "| 30-Year Fixed Conventional | 7.25% | 7.29% |\n| 15-Year Fixed Conventional | 6.75% | 6.88% |\n\n"
+        "Rates are effective as of 01/05/2026.\n\n"
+        "### Build Your Dream Home\n\n"
+        "- After 12 months the loan converts to an adjustable-rate mortgage. Your rate may adjust up to 2% every 12 months.\n\n"
+        "### Your First Home Starts Here\n\n"
+        "- Down payments on fixed-rate home loans usually range from 3% to 20%.\n\n"
+        "Home Loan Rates: Loan annual percentage rates (APR) depend on credit qualification. Mini-Max Loans: Add 1% to conventional rates.\n"
+    )
+
+    def test_down_payments_rate_caps_and_increments_are_not_rates(self):
+        ks = build(("s1", "2026-01-10", [page("/personal/loans/home-loans", "Home Loans", self.HOME)]))
+        a = ks.answer("What are the home loan rates?")
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("7.25%", a.text)
+        self.assertIn("6.75%", a.text)
+        self.assertFalse({1.0, 2.0, 3.0, 20.0} & numbers(a.text), a.text)
+
+    def test_sentence_with_two_measures_is_not_read_as_one_rate(self):
+        md = (
+            "# Money Market\n\n| Tier | Dividend Rate | APY |\n| --- | --- | --- |\n| $0.01+ | 0.40% | 0.40% |\n\n"
+            "Rates are effective as of 01/05/2026.\n\n"
+            "### Save Your Money, Your Way\n\n"
+            "Open a new money market account with $25,000 in qualifying funds to earn an introductory 4.00% dividend rate for 6 months. 3.66% APY.\n"
+        )
+        ks = build(("s1", "2026-01-10", [page("/personal/savings-account", "Savings", md)]))
+        a = ks.answer("What are the rates on your money market accounts?")
+        self.assertIn("0.40%", a.text)
+        self.assertFalse({4.0, 3.66} & numbers(a.text), a.text)
+
+    def test_sentence_under_a_product_heading_is_a_rate_statement(self):
+        md = (
+            "# Savings\n\n| Account | Dividend Rate | APY |\n| --- | --- | --- |\n| Share Savings | 0.10% | 0.10% |\n\n"
+            "Rates are effective as of 01/05/2026.\n\n"
+            "### Youth Savings\n\nEarn a competitive 1.00% APY on your first $500.\n\n"
+            "### Why members love us\n\nMembers earn a competitive 5.00% APY on balances when they bring new money.\n"
+        )
+        ks = build(("s1", "2026-01-10", [page("/personal/savings-account", "Savings", md)]))
+        a = ks.answer("What are your savings rates?")
+        self.assertIn("0.10%", a.text)
+        self.assertIn("Youth Savings: 1.00% APY", a.text)
+        self.assertNotIn("5.00%", a.text)
+
+    def test_sentence_is_used_when_no_table_covers_the_product(self):
+        md = "# Rewards Card\n\n- Competitive rate if you carry a balance: 15.50%-21.00% APR.\n"
+        ks = build(("s1", "2026-01-10", [page("/personal/credit-cards", "Credit Cards", md)]))
+        a = ks.answer("What is the APR on the rewards card?")
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("15.50%", a.text)
+
+
+class EligibilityScopeTests(unittest.TestCase):
+    """An eligibility rule that names an area ("our charter area") is completed with the page's own description of that area."""
+
+    JOIN = (
+        "# Ready to Become Our Newest Member?\n\n"
+        "We are so glad you are here! When you join, you become a member-owner.\n\n"
+        "#### Local Service\n\n"
+        "You can find us in Northvale, Westmere and Eastbrook. If you travel, you can also use shared branches nationwide.\n\n"
+        "## You're Eligible to Join If Any of These Sound Like You\n\n"
+        "- You live or work within our charter area.\n\n"
+        "- You have an immediate family member who is a member.\n\n"
+        "To join, simply open a savings account with $25 or more.\n"
+    )
+
+    def test_eligibility_answer_names_the_area_the_same_page_describes(self):
+        ks = build(("s1", "2026-01-10", [page("/about/join", "Join", self.JOIN)]))
+        a = ks.answer("Who is eligible to become a member?")
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("live or work", a.text)
+        for name in ("Northvale", "Westmere", "Eastbrook"):
+            self.assertIn(name, a.text)
+        self.assertTrue(a.sources and all(s.url == SITE + "/about/join" for s in a.sources), a.sources)
+
+    def test_area_is_not_borrowed_from_an_unrelated_page(self):
+        join = self.JOIN.replace("You can find us in Northvale, Westmere and Eastbrook. ", "")
+        blog = "# Agency news\n\nOur insurance agency operates in Northvale, Westmere and Eastbrook.\n"
+        ks = build(("s1", "2026-01-10", [page("/about/join", "Join", join), page("/learn/blog/agency-news", "Agency news", blog)]))
+        a = ks.answer("Who is eligible to become a member?")
+        self.assertIn("live or work", a.text)
+        self.assertNotIn("Northvale", a.text)
+
+    def test_list_introduced_by_a_colon_is_included(self):
+        md = (
+            "# Scholarships\n\n"
+            "**Charter Area:** The entrant's permanent home address must be located in one of the following counties:\n\n"
+            "  - Northvale: Any county\n\n"
+            "  - Westmere: Carroll, Rock Island, Stephenson\n\n"
+            "**Grade Point Average:** A cumulative GPA of 2.5 is required.\n"
+        )
+        ks = build(("s1", "2026-01-10", [page("/scholarships", "Scholarships", md)]))
+        a = ks.answer("What counties are in the charter area?")
+        self.assertIn("Westmere: Carroll, Rock Island, Stephenson", a.text)
+
+
+class PassageIdentityTests(unittest.TestCase):
+    """A descriptive question about a named account is answered about that account."""
+
+    def test_named_account_question_is_not_answered_from_another_account(self):
+        personal = (
+            "# Checking\n\n| Account | Dividend Rate | APY |\n| --- | --- | --- |\n| Free Checking | 0.00% | 0.00% |\n| Premier Checking | 0.10% | 0.10% |\n\n"
+            "## Free Checking\n\nThis account keeps things simple. No monthly fees, no minimum balance and no hoops to jump through.\n\n"
+            "## Premier Checking\n\n- Avoid a $10 monthly fee by keeping a monthly balance of $5,000 or more.\n"
+        )
+        business = (
+            "# Business Checking\n\n## Business Premier Checking\n\n"
+            "- Skip the $10 monthly fee by keeping your monthly balance above $5,000.\n- Fee-free withdrawals at our ATMs.\n"
+        )
+        ks = build(("s1", "2026-01-10", [
+            page("/personal/checking-accounts", "Checking", personal),
+            page("/business/checking-accounts", "Business Checking", business),
+        ]))
+        a = ks.answer("Is there a monthly fee on Free Checking?")
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("No monthly fees", a.text)
+        self.assertNotIn("$10", a.text)
+
+
+class ContactTests(unittest.TestCase):
+    """How to reach the organisation is answered from its own contact page, never from a paragraph that
+    happens to mention a phone number."""
+
+    PAGES = [
+        page("/contact", "Contact", "# We're Here to Help\n\nFor general questions, use our form.\n\n**Phone:** [555-010-2000](tel:555-010-2000)\n\n**Routing Number:** 123456789\n\n### Harbor Branch\n\n12 Harbor Rd., Harbor, ST, 10001\n"),
+        page("/personal/credit-cards", "Credit Cards", "# Rewards Card\n\n- [What if there is a problem with my reward redemption?](https://www.harborlight-fcu.example/personal/credit-cards#)\n\nRedemptions are handled by our partner. You can contact the partner by calling 555-010-9999 or through the partner's own website.\n"),
+    ]
+
+    def setUp(self):
+        self.ks = build(("s1", "2026-01-10", self.PAGES))
+
+    def test_contact_question_uses_the_contact_page_number(self):
+        for q in ("How do I contact you?", "What is your phone number?", "How can I reach customer service?"):
+            a = self.ks.answer(q)
+            self.assertTrue(a.confident, (q, a.text))
+            self.assertIn("555-010-2000", a.text, q)
+            self.assertNotIn("555-010-9999", a.text, q)
+            self.assertEqual([s.url for s in a.sources], [SITE + "/contact"], q)
+
+    def test_phone_for_a_branch_without_a_listed_number_is_declined_without_numbers(self):
+        a = self.ks.answer("What is the phone number for the Harbor branch?")
+        self.assertFalse(a.confident, a.text)
+        self.assertFalse(numbers(a.text), a.text)
+
+    def test_procedural_gap_still_points_to_the_contact_channel(self):
+        a = self.ks.answer("How can I update my mailing address?")
+        self.assertFalse(a.confident, a.text)
+        self.assertIn("555-010-2000", a.text)
+
+
 if __name__ == "__main__":
     unittest.main()
