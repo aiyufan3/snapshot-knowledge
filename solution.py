@@ -105,8 +105,9 @@ LONG_DATE_RE = re.compile(rf"\b({MONTH_NAMES})\.?\s+(\d{{1,2}}),?\s+(20\d\d)\b")
 NUM_DATE_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(20\d\d)\b")
 ISO_DATE_RE = re.compile(r"\b(20\d\d)-(\d{2})-(\d{2})\b")
 EFFECTIVE_RE = re.compile(
-    rf"effective(?: as of)?\s*:?\s*(\d{{1,2}}/\d{{1,2}}/20\d\d|(?:{MONTH_NAMES})\.?\s+\d{{1,2}},?\s+20\d\d)", re.I
+    rf"effective(?: as of| on| from| date)?\s*:?\s*(\d{{1,2}}/\d{{1,2}}/20\d\d|(?:{MONTH_NAMES})\.?\s+\d{{1,2}},?\s+20\d\d|20\d\d-\d{{2}}-\d{{2}})", re.I
 )
+ANY_DATE_RE = re.compile(rf"\d{{1,2}}/\d{{1,2}}/20\d\d|(?:{MONTH_NAMES})\.?\s+\d{{1,2}},?\s+20\d\d|20\d\d-\d{{2}}-\d{{2}}", re.I)
 PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 PCT_EXPR_RE = re.compile(r"\d+(?:\.\d+)?\s*%(?:\s*(?:[-–—]|to)\s*\d+(?:\.\d+)?\s*%)?")
 LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
@@ -345,12 +346,29 @@ def _effective_date(text: str) -> str:
     m = EFFECTIVE_RE.search(text or "")
     if not m:
         return ""
-    raw = m.group(1)
-    nm = NUM_DATE_RE.search(raw)
+    return _parse_date(m.group(1))
+
+
+def _parse_date(raw: str) -> str:
+    """MM/DD/YYYY, 'Month D, YYYY' or YYYY-MM-DD as an ISO date ('' when unreadable)."""
+    nm = NUM_DATE_RE.search(raw or "")
     if nm:
         return _iso(int(nm.group(3)), int(nm.group(1)), int(nm.group(2)))
-    lm = LONG_DATE_RE.search(raw)
+    im = ISO_DATE_RE.search(raw or "")
+    if im:
+        return _iso(int(im.group(1)), int(im.group(2)), int(im.group(3)))
+    lm = LONG_DATE_RE.search(raw or "")
     return _long_date_iso(lm) if lm else ""
+
+
+def _effective_dates(text: str) -> list[str]:
+    """Every 'effective <date>' statement in a text, as ISO dates."""
+    return [d for d in (_parse_date(m.group(1)) for m in EFFECTIVE_RE.finditer(text or "")) if d]
+
+
+def _scheduled(dates: list[str], day: str) -> bool:
+    """True when a text is dated for the future only: every effective date it carries is after ``day``."""
+    return bool(dates) and all(d > day for d in dates)
 
 
 def _money_numbers(text: str) -> list[float]:
@@ -780,7 +798,7 @@ class Knowledge:
             if s.startswith(("![", "✕", "* * *")):
                 i += 1
                 continue
-            if _is_label_line(s):
+            if _is_label_line(s) and not EFFECTIVE_RE.search(s):
                 flush()
                 labels.append(_clean_inline(s))
                 labels = labels[-2:]
@@ -793,6 +811,7 @@ class Knowledge:
         flush()
 
     def _parse_table(self, idx, pinfo, lines, i, heading, labels) -> int:
+        start = i
         headers = _split_table_row(lines[i])
         i += 1
         if headers is None:
@@ -818,6 +837,20 @@ class Knowledge:
             j += 1
         window_text = "\n".join(window)
         effective = _effective_date(window_text)
+        if not effective:  # a dated line just above the table (not another table's trailer) applies to it
+            k, seen = start - 1, 0
+            while k >= pinfo.get("_window_end", 0) and seen < 3:
+                s = lines[k].strip()
+                k -= 1
+                if not s:
+                    continue
+                if s.startswith(("|", "#")):
+                    break
+                if EFFECTIVE_RE.search(s):
+                    effective = _effective_date(s)
+                    break
+                seen += 1
+        pinfo["_window_end"] = j
         expired = bool(EXPIRED_RE.search(window_text))
         for cells, quote in body:
             self._add_row(idx, pinfo, heading, labels, headers, cells, effective, expired, "table", quote)
@@ -930,7 +963,7 @@ class Knowledge:
             return
         cell = _clean_cell(m.group(0))
         headers = ["Product", kind.upper()]
-        self._add_row(idx, pinfo, heading, labels, headers, [prefix, cell], "", bool(EXPIRED_RE.search(line)), "line", line, prose=prose)
+        self._add_row(idx, pinfo, heading, labels, headers, [prefix, cell], _effective_date(line), bool(EXPIRED_RE.search(line)), "line", line, prose=prose)
 
     def _add_block(self, idx, pinfo, heading, para):
         joined = " ".join(para)
@@ -1058,7 +1091,7 @@ class Knowledge:
         """Route the question; returns (answer or None, coverage of the question by the evidence)."""
         ref_day = str(as_of)[:10] if as_of else snap.taken_on  # the day facts must be in force
         if _is_hours_question(q):
-            r = self._answer_hours(snap, q)
+            r = self._answer_hours(snap, q, ref_day)
             if r is not None:
                 return r, 1.0
         if re.search(r"\brouting\b|\baba\b", q):
@@ -1072,7 +1105,7 @@ class Knowledge:
             if r is not None:
                 return r, 1.0
         if CONTACT_Q_RE.search(q):
-            r = self._answer_contact(snap, q)
+            r = self._answer_contact(snap, q, ref_day)
             if r is not None:
                 return r, 1.0
         if _is_link_question(q):
@@ -1086,7 +1119,7 @@ class Knowledge:
         if self._is_rate_question(q):
             r = self._answer_rates(snap, q, ref_day, raw)
             return (r, 1.0) if r is not None else (self._refuse(_refuse_line(q)), 0.0)
-        r, cov = self._answer_passage(snap, q)
+        r, cov = self._answer_passage(snap, q, ref_day)
         return (r, cov) if r is not None else (self._refuse(DEFAULT_REFUSAL), 0.0)
 
     def _is_rate_question(self, q: str) -> bool:
@@ -1414,14 +1447,15 @@ class Knowledge:
         ranked.sort(key=lambda x: (-x[0], x[1]))
         return ranked[:k]
 
-    def _answer_passage(self, snap: SnapIndex, q: str) -> tuple:
+    def _answer_passage(self, snap: SnapIndex, q: str, ref_day: str = "") -> tuple:
         q_tokens = [t for t in _content(q, self.stop)]
         if not q_tokens:
             return None, 0.0
+        ref_day = ref_day or snap.taken_on
         procedural = bool(re.search(r"\bhow (?:can|do|would|could|should) i\b|\bhow to\b", q))
         ranked = self._search_blocks(snap, q_tokens, business=bool(re.search(r"\bbusiness\b|\bcommercial\b", q)))
         if not ranked:
-            return (self._contact_fallback(snap), 0.0) if procedural else (None, 0.0)
+            return (self._contact_fallback(snap, ref_day), 0.0) if procedural else (None, 0.0)
         fee_q = bool(FEE_Q_RE.search(q))
         if fee_q:  # a fee answer states an amount or says there is none
             ranked = [x for x in ranked if FEE_EVIDENCE_RE.search(snap.blocks[x[1]]["text"])]
@@ -1434,9 +1468,16 @@ class Knowledge:
         if not good:
             top = ranked[0]
             if len(top[2]) < need or top[0] < 1.0:
-                return (self._contact_fallback(snap), 0.0) if procedural else (None, 0.0)
+                return (self._contact_fallback(snap, ref_day), 0.0) if procedural else (None, 0.0)
             good = [top]
         good.sort(key=lambda x: (-x[0], x[1]))
+        # Valid time for prose: a paragraph dated "effective <date>" with that date still ahead describes a
+        # scheduled change.  It loses to an in-force paragraph; alone, it is described, not asserted.
+        later = [x for x in good if _scheduled(_effective_dates(snap.blocks[x[1]]["text"]), ref_day)]
+        in_force = [x for x in good if x not in later]
+        scheduled_only = not in_force
+        if in_force:
+            good = in_force
         if snap.blocks[good[0][1]]["pub"]:  # dated articles: prefer the most recent among near-equal matches
             dated = [x for x in good if snap.blocks[x[1]]["pub"]]
             dated.sort(key=lambda x: (snap.blocks[x[1]]["pub"], snap.blocks[x[1]]["fetched_at"], x[0], -x[1]), reverse=True)
@@ -1447,8 +1488,17 @@ class Knowledge:
             for s, i, m, bh in ranked:
                 cand = snap.blocks[i]
                 if cand["url"] == blk["url"] and cand.get("lead") and s >= 0.6 * best_s and len(bh) >= max(1, len(b0)) and len(m) >= need:
+                    if _scheduled(_effective_dates(cand["text"]), ref_day) and not scheduled_only:
+                        continue
                     blk, m0 = cand, m
                     break
+        if not scheduled_only:  # in one section, a dated statement that is in force supersedes an undated one
+            def in_force_date(b):
+                return max((d for d in _effective_dates(b["text"]) if d <= ref_day), default="")
+            for s, i, m, bh in good:
+                cand = snap.blocks[i]
+                if cand is not blk and cand["url"] == blk["url"] and cand["heading"] == blk["heading"] and in_force_date(cand) > in_force_date(blk):
+                    blk, m0 = cand, m
         confident = True
         if ELIGIBILITY_Q_RE.search(q):  # an eligibility answer must state criteria, not an invitation
             def states_criteria(b):
@@ -1463,12 +1513,19 @@ class Knowledge:
                     confident = False
         coverage = len(m0) / max(1, len(distinct))
         if procedural and coverage < 0.8:
-            return self._contact_fallback(snap), 0.0
+            return self._contact_fallback(snap, ref_day), 0.0
         if fee_q and coverage < 0.99:
             return None, 0.0
         text = _compose_block(blk)
         sid = blk.get("snapshot_id", snap.snapshot_id)
         sources = [self._src(sid, blk["url"], blk["text"])]
+        note = None
+        if scheduled_only:
+            confident = False
+            text = f"Not yet in effect as of {ref_day}: {text}"
+        elif later:
+            lb = snap.blocks[later[0][1]]
+            note = f"A change is published to take effect {min(_effective_dates(lb['text']))}: {_trim_sentence(lb['text'], 240)}"
         if text.rstrip().endswith(":"):  # a paragraph that introduces a list is incomplete without the list
             nxt = self._next_block(snap, blk)
             if nxt is not None and len(nxt["text"]) <= 600:
@@ -1480,7 +1537,7 @@ class Knowledge:
                 sent, sblk = scope
                 text = f"{text} On where that applies, the website says: {sent}"
                 sources.append(self._src(sblk.get("snapshot_id", snap.snapshot_id), sblk["url"], sent))
-        return Answer(text=text, sources=sources, confident=confident), coverage
+        return Answer(text=text, sources=sources, confident=confident, conflict_note=note), coverage
 
     def _next_block(self, snap: SnapIndex, blk: dict) -> Optional[dict]:
         """The paragraph that follows ``blk`` on the same page, if any."""
@@ -1511,32 +1568,48 @@ class Knowledge:
                                     if re.search(r"join|member|eligib", f"{urlparse(b['url']).path} {b['title']}", re.I)])
         return found
 
-    def _contact_channel(self, snap: SnapIndex):
-        """The site's own contact page and the phone number it publishes: (phone, page, line) or None."""
+    def _contact_channel(self, snap: SnapIndex, ref_day: str = "") -> Optional[dict]:
+        """The site's own contact page and the phone number it publishes as in force on ``ref_day``:
+        {"page", "phone", "line", "later": [(date, phone, line), ...]}; ``phone`` is None when no number
+        is in force.  A line dated "effective <date>" counts from that date and supersedes undated lines."""
         pages = [p for p in snap.pages if re.search(r"/contact(?:-us)?/?$", urlparse(p["url"]).path) or "contact" in p["title"].lower()]
         if not pages:
             return None
         page = max(pages, key=lambda p: p["priority"])
-        phones = Counter(m.group(0) for m in PHONE_RE.finditer(page["text"]))
-        if not phones:
-            return None
-        phone = phones.most_common(1)[0][0]
-        line = next((l for l in page["text"].splitlines() if phone in l), phone)
-        return phone, page, _clean_inline(line)
+        ref_day = ref_day or snap.taken_on
+        current, later = [], []
+        for line in page["text"].splitlines():
+            m = PHONE_RE.search(line)
+            if not m:
+                continue
+            eff = _effective_date(line)
+            (later if eff and eff > ref_day else current).append((eff, m.group(0), _clean_inline(line)))
+        chosen = None
+        if current:
+            newest = max(e for e, _p, _l in current)
+            chosen = next(c for c in current if c[0] == newest)
+        return {"page": page, "phone": chosen[1] if chosen else None, "line": chosen[2] if chosen else "",
+                "later": sorted(later)}
 
-    def _contact_fallback(self, snap: SnapIndex) -> Optional[Answer]:
+    def _contact_fallback(self, snap: SnapIndex, ref_day: str = "") -> Optional[Answer]:
         """Procedural question the pages do not answer: point to the site's own contact channel."""
-        channel = self._contact_channel(snap)
+        channel = self._contact_channel(snap, ref_day)
         if channel is None:
             return None
-        phone, page, line = channel
-        text = (f"I don't know how to do that from the website alone. Please contact us at {phone} "
-                f"or through the contact page ({page['url']}).")
-        return Answer(text=text, sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], line)], confident=False)
+        page = channel["page"]
+        if channel["phone"]:
+            text = (f"I don't know how to do that from the website alone. Please contact us at {channel['phone']} "
+                    f"or through the contact page ({page['url']}).")
+            quote = channel["line"]
+        else:
+            text = f"I don't know how to do that from the website alone. Please contact us through the contact page ({page['url']})."
+            quote = _clean_inline(page["text"])[:200]
+        return Answer(text=text, sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], quote)], confident=False)
 
-    def _answer_contact(self, snap: SnapIndex, q: str) -> Optional[Answer]:
+    def _answer_contact(self, snap: SnapIndex, q: str, ref_day: str = "") -> Optional[Answer]:
         """How to reach the organisation.  A branch's own number is given only when it is listed
         with that branch; otherwise the contact page's number is the answer."""
+        ref_day = ref_day or snap.taken_on
         branch = _named_branch(q)
         if not branch:
             m = re.search(r"\b([a-z0-9][a-z0-9 .'\-]{1,40}?)\s+branch(?:'s)?\s+(?:phone|telephone|number)", q)
@@ -1549,18 +1622,31 @@ class Knowledge:
                     m = PHONE_RE.search(line)
                     if not m:
                         continue
+                    eff = _effective_date(line)
+                    if eff and eff > ref_day:
+                        continue
                     ctx = " ".join(lines[max(0, li - 6): li + 1]).lower()
                     if btoks and all(t in _tokens(ctx) for t in btoks):
                         return Answer(text=f"The {branch} branch's phone number is {m.group(0)}.",
                                       sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], _clean_inline(line))],
                                       confident=True)
             return self._refuse(f"I don't know. A phone number for the {branch} branch isn't listed on the website. Please contact us.")
-        channel = self._contact_channel(snap)
+        channel = self._contact_channel(snap, ref_day)
         if channel is None:
             return None
-        phone, page, line = channel
-        return Answer(text=f"You can reach us by phone at {phone} or through the contact page ({page['url']}).",
-                      sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], line)], confident=True)
+        page = channel["page"]
+        if channel["phone"]:
+            return Answer(text=f"You can reach us by phone at {channel['phone']} or through the contact page ({page['url']}).",
+                          sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], channel["line"])], confident=True)
+        if channel["later"]:  # only a number dated for the future: describe it without asserting it
+            eff, phone, line = channel["later"][0]
+            return Answer(text=(f"Not yet in effect as of {ref_day}: the contact page lists {phone} to take effect {eff}. "
+                                f"No phone number currently in effect is listed; you can reach us through the contact page ({page['url']})."),
+                          sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], line)], confident=False)
+        if re.search(r"\b(?:phone|telephone|number|call)\b", q):
+            return self._refuse(f"I don't know. A phone number isn't listed on the website. Please contact us through the contact page ({page['url']}).")
+        return Answer(text=f"You can reach us through the contact page ({page['url']}).",
+                      sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], _clean_inline(page["text"])[:200])], confident=True)
 
     def _revocation(self, snap: SnapIndex, q: str):
         """Does the selected snapshot say the product named in the question was withdrawn?
@@ -1825,8 +1911,19 @@ class Knowledge:
                     continue
                 before = " ".join(lines[max(0, li - 6): li])
                 ctx = f"{page['title']} {page['text'][:600]} {before}"
+                effective = _effective_date(s)  # "Effective <date>, our new lobby hours will be:" just above
+                k, seen = li - 1, 0
+                while not effective and k >= 0 and seen < 3:
+                    t = lines[k].strip()
+                    k -= 1
+                    if not t:
+                        continue
+                    if t.startswith(("#", "|")) or SERVICE_RE.match(t) or DAY_RE.match(t):
+                        break
+                    effective = _effective_date(t)
+                    seen += 1
                 out.append({
-                    "service": service, "entries": entries, "page": page, "pub": page["pub"],
+                    "service": service, "entries": entries, "page": page, "pub": page["pub"], "effective": effective,
                     "ctx_tokens": set(_tokens(ctx)), "place": page["title"].split("|")[0].strip(),
                     "norm": (service, tuple(_norm(e) for e in entries)),
                     "quote": _clean_inline(" ".join(x.strip() for x in lines[li:j] if x.strip()))[:240],
@@ -1834,8 +1931,9 @@ class Knowledge:
         snap.schedules = out
         return out
 
-    def _answer_hours(self, snap: SnapIndex, q: str) -> Optional[Answer]:
+    def _answer_hours(self, snap: SnapIndex, q: str, ref_day: str = "") -> Optional[Answer]:
         schedules = self._schedules_for(snap)
+        ref_day = ref_day or snap.taken_on
         branch = _named_branch(q)
         want = set()
         if re.search(r"drive", q):
@@ -1855,10 +1953,26 @@ class Knowledge:
                 schedules = matched
         if not schedules:
             return None
-        chosen = [s for s in schedules if s["service"] in want]
-        if not chosen:
+        wanted = [s for s in schedules if s["service"] in want]
+        if not wanted:
             return None
+        chosen = [s for s in wanted if not s["effective"] or s["effective"] <= ref_day]
+        later = [s for s in wanted if s["effective"] and s["effective"] > ref_day]
+        if not chosen:  # only a schedule dated for the future: describe it without asserting it
+            parts = [f"{s['place']}: {s['service'].title()} {'; '.join(s['entries'])} takes effect {s['effective']}" for s in later[:4]]
+            sources = [self._src(s["page"].get("snapshot_id", snap.snapshot_id), s["page"]["url"], s["quote"]) for s in later[:4]]
+            return Answer(text=(f"Not yet in effect as of {ref_day}: " + "; ".join(parts)
+                                + ". No schedule currently in effect is listed for this location.")[:2000],
+                          sources=sources, confident=False)
+        # within one page a dated schedule that is in effect supersedes an undated one for the same service
+        newest: dict = {}
+        for s in chosen:
+            key = (s["page"]["url"], s["service"])
+            newest[key] = max(newest.get(key, ""), s["effective"])
+        chosen = [s for s in chosen if s["effective"] == newest[(s["page"]["url"], s["service"])]]
         chosen.sort(key=lambda s: (s["pub"], s["page"]["fetched_at"]), reverse=True)
+        notes = [f"A later schedule is published for {s['place']} ({s['service']}): {'; '.join(s['entries'])} "
+                 f"takes effect {s['effective']} (not in effect on {ref_day})." for s in later[:3]]
         seen = set()
         parts = []
         sources = []
@@ -1881,7 +1995,7 @@ class Knowledge:
         else:
             text = ("Hours are published per branch in the website's branch announcements and vary by location. "
                     + " ".join(parts) + " Tell me which branch you mean for that location's schedule.")
-        return Answer(text=text[:2000], sources=sources, confident=True)
+        return Answer(text=text[:2000], sources=sources, confident=True, conflict_note=" ".join(notes)[:600] or None)
 
     # ---------------------------------------------------------------- conflicts
     def conflicts(self):

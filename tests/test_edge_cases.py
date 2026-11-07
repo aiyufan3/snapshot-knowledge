@@ -396,5 +396,119 @@ class ContactTests(unittest.TestCase):
         self.assertIn("555-010-2000", a.text)
 
 
+class EffectiveDateScopeTests(unittest.TestCase):
+    """An explicit 'effective <date>' binds the statement next to it, in every format and position, on every path."""
+
+    Q = "What is the 6-month certificate APY?"
+
+    def _before(self, date, before=True):
+        lines = ["# Certificates", ""]
+        if before:
+            lines += [f"Rates are effective as of {date} and are subject to change without notice.", ""]
+        lines += ["| Product | APY |", "| --- | --- |", "| 6-month certificate | 4% |", ""]
+        if not before:
+            lines += [f"Rates are effective as of {date}.", ""]
+        return "\n".join(lines)
+
+    def test_date_line_before_the_table_binds_to_it(self):
+        ks = build(("s1", "2026-01-10", [page("/rates", "Rates", self._before("03/01/2026")),
+                                         page("/personal/certificates", "Certificates", table("6-month certificate", 3, "01/01/2026"))]))
+        for day, want, other in ((None, "3%", "4%"), ("2026-02-28", "3%", "4%"), ("2026-03-01", "4%", "3%"), ("2026-03-05", "4%", "3%")):
+            a = ks.answer(self.Q, as_of=day)
+            self.assertTrue(a.confident, (day, a.text))
+            self.assertIn(want, a.text, day)
+            self.assertNotIn(other, a.text, day)
+        self.assertIn("2026-03-01", ks.answer(self.Q).conflict_note or "")
+        self.assertTrue(ks.answer("Do any 6-month certificate tiers pay 4% APY?").text.startswith("No"))
+
+    def test_iso_date_is_read(self):
+        ks = build(("s1", "2026-01-10", [page("/rates", "Rates", self._before("2026-03-01", before=False)),
+                                         page("/personal/certificates", "Certificates", table("6-month certificate", 3, "2026-01-01"))]))
+        self.assertIn("3%", ks.answer(self.Q).text)
+        self.assertNotIn("4%", ks.answer(self.Q).text)
+        self.assertIn("4%", ks.answer(self.Q, as_of="2026-03-05").text)
+
+    def test_date_does_not_leak_into_the_next_section(self):
+        md = self._before("03/01/2026") + "# Money Market\n\n| Account | APY |\n| --- | --- |\n| Money Market | 2% |\n"
+        ks = build(("s1", "2026-01-10", [page("/rates", "Rates", md)]))
+        mm = ks.answer("What is the money market APY?")
+        self.assertTrue(mm.confident, mm.text)
+        self.assertIn("2%", mm.text)
+        cert = ks.answer(self.Q)
+        self.assertFalse(cert.confident, cert.text)
+        self.assertIn("2026-03-01", cert.text)
+
+    def test_sentence_dated_for_the_future_is_scheduled(self):
+        md = "# Alpha certificates\n\n6-month Alpha certificate APY is 4% effective March 1, 2026.\n"
+        ks = build(("s1", "2026-01-10", [page("/personal/alpha", "Alpha certificates", md)]))
+        q = "What is the 6-month Alpha certificate APY?"
+        a = ks.answer(q)
+        self.assertFalse(a.confident, a.text)
+        self.assertIn("2026-03-01", a.text)
+        self.assertIn("4%", ks.answer(q, as_of="2026-03-05").text)
+        with_table = table("6-month Alpha certificate", 3, "01/01/2026", heading="Alpha certificates") + "\nThe 6-month Alpha certificate APY is 4% effective March 1, 2026.\n"
+        ks = build(("s1", "2026-01-10", [page("/personal/alpha", "Alpha certificates", with_table)]))
+        a = ks.answer(q)
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("3%", a.text)
+        self.assertNotIn("4%", a.text)
+
+    def test_contact_number_dated_for_the_future_is_not_current(self):
+        md = "# Contact\n\n**Phone:** 555-010-2000\n\nEffective March 1, 2026, call our new phone number: 555-010-9000.\n"
+        ks = build(("s1", "2026-01-10", [page("/contact", "Contact", md)]))
+        a = ks.answer("How do I contact you?")
+        self.assertIn("555-010-2000", a.text)
+        self.assertNotIn("555-010-9000", a.text)
+        a = ks.answer("How do I contact you?", as_of="2026-03-05")
+        self.assertIn("555-010-9000", a.text)
+        self.assertNotIn("555-010-2000", a.text)
+        ks = build(("s1", "2026-01-10", [page("/contact", "Contact", "# Contact\n\nEffective March 1, 2026, call our new phone number: 555-010-9000.\n")]))
+        a = ks.answer("How do I contact you?")
+        self.assertFalse(a.confident, a.text)
+        self.assertIn("2026-03-01", a.text)
+
+    def test_hours_dated_for_the_future_are_not_current(self):
+        md = ("# Harbor Branch\n\nLobby: Monday-Friday: 9 a.m. to 5 p.m.\n\n"
+              "Effective March 1, 2026, our new lobby hours will be:\n\nLobby: Monday-Friday: 10 a.m. to 4 p.m.\n")
+        ks = build(("s1", "2026-01-10", [page("/locations/harbor", "Harbor Branch", md)]))
+        q = "What are the lobby hours for the Harbor branch?"
+        a = ks.answer(q)
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("9 a.m. to 5 p.m.", a.text)
+        self.assertNotIn("10 a.m. to 4 p.m.", a.text)
+        self.assertIn("2026-03-01", a.conflict_note or "")
+        a = ks.answer(q, as_of="2026-03-05")
+        self.assertIn("10 a.m. to 4 p.m.", a.text)
+        self.assertNotIn("9 a.m. to 5 p.m.", a.text)
+        ks = build(("s1", "2026-01-10", [page("/locations/harbor", "Harbor Branch", "# Harbor Branch\n\nEffective March 1, 2026, our new lobby hours will be:\n\nLobby: Monday-Friday: 10 a.m. to 4 p.m.\n")]))
+        a = ks.answer(q)
+        self.assertFalse(a.confident, a.text)
+        self.assertIn("2026-03-01", a.text)
+
+    def test_event_dates_near_hours_and_phone_lines_are_not_effective_dates(self):
+        md = ("# Harbor Branch\n\nThe annual meeting will be held on 03/20/2026.\n\nLobby: Monday-Friday: 9 a.m. to 5 p.m.\n\n"
+              "Join us on March 20, 2026 for the celebration.\n\nPhone: 555-010-2000\n")
+        ks = build(("s1", "2026-01-10", [page("/contact", "Contact", md)]))
+        a = ks.answer("What are the lobby hours for the Harbor branch?")
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("9 a.m. to 5 p.m.", a.text)
+        self.assertIn("555-010-2000", ks.answer("What is your phone number?").text)
+
+    def test_paragraph_dated_for_the_future_is_not_asserted_as_current(self):
+        md = "# Checking\n\n## Free Checking\n\nFree Checking has no monthly fee.\n\nEffective March 1, 2026, Free Checking will have a monthly fee of $10.\n"
+        ks = build(("s1", "2026-01-10", [page("/personal/checking", "Checking", md)]))
+        q = "Is there a monthly fee on Free Checking?"
+        a = ks.answer(q)
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("no monthly fee", a.text)
+        self.assertNotIn("$10", a.text)
+        self.assertIn("2026-03-01", a.conflict_note or "")
+        self.assertIn("$10", ks.answer(q, as_of="2026-03-05").text)
+        ks = build(("s1", "2026-01-10", [page("/personal/checking", "Checking", "# Checking\n\n## Free Checking\n\nEffective March 1, 2026, Free Checking will have a monthly fee of $10.\n")]))
+        a = ks.answer(q)
+        self.assertFalse(a.confident, a.text)
+        self.assertIn("2026-01-10", a.text)
+
+
 if __name__ == "__main__":
     unittest.main()
