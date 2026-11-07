@@ -592,5 +592,39 @@ class RevocationGuardTests(unittest.TestCase):
         self.assertIn("3%", a.text)
 
 
+class ConflictIdentityTests(unittest.TestCase):
+    """Each product keeps its own conflict entry; the same conflict seen again in a later snapshot is reported once."""
+
+    def pages(self, fetched="2026-01-10T08:00:00Z"):
+        return [
+            page("/rates/alpha", "Alpha rates", table("6-month Alpha certificate", 4, "01/01/2026", heading="Alpha certificates"), fetched=fetched),
+            page("/personal/alpha", "Alpha certificates", table("6-month Alpha certificate", 3, "01/01/2026", heading="Alpha certificates"), fetched=fetched),
+            page("/rates/beta", "Beta rates", table("6-month Beta certificate", 5, "01/01/2026", heading="Beta certificates"), fetched=fetched),
+            page("/personal/beta", "Beta certificates", table("6-month Beta certificate", 2, "01/01/2026", heading="Beta certificates"), fetched=fetched),
+        ]
+
+    def test_two_products_with_the_same_term_keep_two_entries(self):
+        cs = build(("s1", "2026-01-10", self.pages())).conflicts()
+        self.assertEqual(len(cs), 2, [c.topic for c in cs])
+        by_topic = {("Alpha" if "Alpha" in c.topic else "Beta"): c for c in cs}
+        self.assertEqual(sorted(by_topic), ["Alpha", "Beta"])
+        self.assertEqual(by_topic["Alpha"].values, ["4.00% APY", "3.00% APY"])
+        self.assertEqual(by_topic["Beta"].values, ["5.00% APY", "2.00% APY"])
+        self.assertEqual(by_topic["Beta"].resolution, "5.00% APY")
+
+    def test_same_conflict_in_a_later_snapshot_is_reported_once_from_that_snapshot(self):
+        cs = build(("s1", "2026-01-10", self.pages()), ("s2", "2026-03-15", self.pages(fetched="2026-03-15T08:00:00Z"))).conflicts()
+        self.assertEqual(len(cs), 2, [c.topic for c in cs])
+        for c in cs:
+            self.assertTrue(all(s.snapshot_id == "s2" for s in c.sources), c.sources)
+
+    def test_tiers_that_do_not_overlap_are_not_merged(self):
+        md_a = "# Savings\n\n| Balance | APY |\n| --- | --- |\n| $0 - $9,999 | 1% |\n| $10,000+ | 2% |\n\nRates are effective as of 01/01/2026.\n"
+        md_b = "# Savings\n\n| Balance | APY |\n| --- | --- |\n| $0 - $9,999 | 1.5% |\n| $10,000+ | 2.5% |\n\nRates are effective as of 01/01/2026.\n"
+        cs = build(("s1", "2026-01-10", [page("/rates", "Rates", md_a), page("/personal/savings", "Savings", md_b)])).conflicts()
+        self.assertEqual(len(cs), 2, [(c.topic, c.values) for c in cs])
+        self.assertEqual(sorted(tuple(c.values) for c in cs), [("1.00% APY", "1.50% APY"), ("2.00% APY", "2.50% APY")])
+
+
 if __name__ == "__main__":
     unittest.main()

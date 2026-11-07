@@ -2132,7 +2132,9 @@ class Knowledge:
                     continue
                 loser = next((r for r, v in comp[1:] if _measure_string(v, kinds) != values[0]), None)
                 topic = f"{_topic_name(ra)} {'/'.join(_kind_label(k) for k in kinds)}".strip()[:180]
-                identity = (key, ra.year_span, ra.balance and (round(ra.balance[0], 2), round(min(ra.balance[1], 1e12), 2)))
+                # one entry per product (its distinguishing name words), measure and tier
+                identity = (key, ra.subtype, tuple(kinds), ra.year_span,
+                            ra.balance and (round(ra.balance[0], 2), round(min(ra.balance[1], 1e12), 2)))
                 out.append((identity, Conflict(
                     topic=topic, values=values[:6], sources=sources, resolution=values[0],
                     reason=_reason_for(ra, loser, snap),
