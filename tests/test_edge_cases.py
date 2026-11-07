@@ -672,5 +672,49 @@ class ScopeDefinitionTests(unittest.TestCase):
         self.assertNotIn("Auto Loans", a.text)
 
 
+class PhoneRoleTests(unittest.TestCase):
+    """A number belongs to the section it is listed in and has a role; neither is guessed."""
+
+    def test_a_neighbouring_branchs_number_is_not_borrowed(self):
+        md = "# Locations\n\n## Harbor Branch\n\n12 Harbor Road\n\n## Bay Branch\n\nPhone: 555-010-3333\n"
+        ks = build(("s1", "2026-01-10", [page("/locations", "Locations", md)]))
+        a = ks.answer("What is the phone number for the Harbor branch?")
+        self.assertFalse(a.confident, a.text)
+        self.assertFalse(numbers(a.text), a.text)
+        b = ks.answer("What is the phone number for the Bay branch?")
+        self.assertTrue(b.confident, b.text)
+        self.assertIn("555-010-3333", b.text)
+
+    def test_general_number_is_chosen_by_role_not_by_frequency(self):
+        md = ("# Contact\n\n**Phone:** 555-010-2000\n\n## Rewards partner\n\nFor rewards questions call our partner at 555-010-7777.\n\n"
+              "Partner support line: 555-010-7777\n\nFax: 555-010-4444\n")
+        ks = build(("s1", "2026-01-10", [page("/contact", "Contact", md)]))
+        for q in ("How do I contact you?", "What is your phone number?"):
+            a = ks.answer(q)
+            self.assertTrue(a.confident, (q, a.text))
+            self.assertIn("555-010-2000", a.text, q)
+            self.assertNotIn("555-010-7777", a.text, q)
+            self.assertNotIn("555-010-4444", a.text, q)
+
+    def test_without_a_general_number_nothing_is_guessed(self):
+        md = "# Contact\n\nUse our secure form.\n\n## Card PIN\n\nTo set a PIN call 555-010-8888.\n\nFax: 555-010-4444\n"
+        ks = build(("s1", "2026-01-10", [page("/contact", "Contact", md)]))
+        a = ks.answer("What is your phone number?")
+        self.assertFalse(a.confident, a.text)
+        self.assertNotIn("555-010-8888", a.text)
+        self.assertNotIn("555-010-4444", a.text)
+        self.assertIn("/contact", a.text)
+        gap = ks.answer("How can I update my mailing address?")
+        self.assertFalse(gap.confident, gap.text)
+        self.assertFalse(numbers(gap.text), gap.text)
+
+    def test_a_question_about_a_specific_line_is_not_answered_with_the_general_number(self):
+        md = "# Contact\n\n**Phone:** 555-010-2000\n\n## Lost or stolen cards\n\nTo report a lost or stolen debit card, call 555-010-5555 at any hour.\n"
+        ks = build(("s1", "2026-01-10", [page("/contact", "Contact", md)]))
+        a = ks.answer("What number do I call to report a lost or stolen card?")
+        self.assertIn("555-010-5555", a.text)
+        self.assertNotIn("555-010-2000", a.text)
+
+
 if __name__ == "__main__":
     unittest.main()

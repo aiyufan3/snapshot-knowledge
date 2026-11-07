@@ -146,6 +146,19 @@ CONTACT_Q_RE = re.compile(
     r"|\b(?:what|which) number (?:do|can|should) (?:i|we) call\b"
     r"|\b(?:customer|member) (?:service|services|support|care)\b[^.?]{0,40}\b(?:phone|number|call|contact|reach)\b"
     r"|\b(?:phone|number|call|contact|reach)\b[^.?]{0,40}\b(?:customer|member) (?:service|services|support|care)\b", re.I)
+# The role of a phone number on a page.  Only a number presented as the organisation's own line
+# (phone, call us, member service...) stands for the organisation; lines for a purpose or a third
+# party (fax, a card partner, a PIN or fraud line) never do.
+PHONE_SKIP_RE = re.compile(
+    r"\b(?:fax|tty|tdd|partner\w*|rewards?|redemption\w*|pin|lost or stolen|lost/stolen|stolen|fraud\w*|disput\w*|collections?|"
+    r"insurance|mortgage|loan payments?|after[- ]hours|24[- ]hours?|automated|telephone banking|audio|text (?:us|message)|sms|"
+    r"international|outside the)\b", re.I)
+PHONE_GENERAL_RE = re.compile(
+    r"\b(?:phone|telephone|call(?: us)?|main|general|member (?:service|services|support|care)|customer (?:service|services|support|care)|"
+    r"contact (?:center|centre|us)|toll[- ]free|questions|speak|reach us|talk to)\b", re.I)
+# A question about a specific line (a card PIN, a lost card, a partner) is not about reaching the organisation.
+SPECIFIC_LINE_Q_RE = re.compile(
+    r"\b(?:lost|stolen|pin|fraud|dispute|rewards?|partner|insurance|mortgage|loan|card|collections?|fax|tty|tdd|wire|after[- ]hours)\b", re.I)
 # A paragraph answers a fee question when it states an amount or says there is none.
 FEE_EVIDENCE_RE = re.compile(
     r"\$\s?\d|\d\s?%|\bno (?:\w+ ){0,2}fees?\b|\bfree\b|\bno (?:charge|cost)\b|\bat no (?:charge|cost)\b|\bwaived\b", re.I)
@@ -577,6 +590,22 @@ def _is_list_item(s: str) -> bool:
 def _is_list_text(text: str) -> bool:
     """A paragraph block made of list items (items are joined with spaces when the page is read)."""
     return _is_list_item(text)
+
+
+def _section_lines(lines: list, li: int, limit: int = 12) -> list:
+    """The lines of the section that line ``li`` belongs to, from its title (the nearest heading or bare
+    label line above, up to ``limit`` lines back) down to the line itself."""
+    out = [lines[li].strip()]
+    k = li - 1
+    while k >= 0 and len(out) < limit:
+        s = lines[k].strip()
+        k -= 1
+        if not s:
+            continue
+        out.append(s)
+        if s.startswith("#") or (_is_label_line(s) and not re.search(r"\d", s)):
+            break
+    return out[::-1]
 
 
 def _is_label_line(s: str) -> bool:
@@ -1632,10 +1661,15 @@ class Knowledge:
         page = max(pages, key=lambda p: p["priority"])
         ref_day = ref_day or snap.taken_on
         current, later = [], []
-        for line in page["text"].splitlines():
+        lines = page["text"].splitlines()
+        for li, line in enumerate(lines):
             m = PHONE_RE.search(line)
             if not m:
                 continue
+            section = _section_lines(lines, li)
+            role = f"{section[0]} {section[-2] if len(section) > 1 else ''} {line}"  # the section's title, the line before, the line
+            if PHONE_SKIP_RE.search(role) or not PHONE_GENERAL_RE.search(role):
+                continue  # a line for a purpose or a third party, or a bare number with no stated role
             eff = _effective_date(line)
             (later if eff and eff > ref_day else current).append((eff, m.group(0), _clean_inline(line)))
         chosen = None
@@ -1664,6 +1698,8 @@ class Knowledge:
         """How to reach the organisation.  A branch's own number is given only when it is listed
         with that branch; otherwise the contact page's number is the answer."""
         ref_day = ref_day or snap.taken_on
+        if SPECIFIC_LINE_Q_RE.search(q):
+            return None  # a number for a specific purpose: left to passage retrieval
         branch = _named_branch(q)
         if not branch:
             m = re.search(r"\b([a-z0-9][a-z0-9 .'\-]{1,40}?)\s+branch(?:'s)?\s+(?:phone|telephone|number)", q)
@@ -1674,12 +1710,12 @@ class Knowledge:
                 lines = page["text"].splitlines()
                 for li, line in enumerate(lines):
                     m = PHONE_RE.search(line)
-                    if not m:
+                    if not m or PHONE_SKIP_RE.search(line):
                         continue
                     eff = _effective_date(line)
                     if eff and eff > ref_day:
                         continue
-                    ctx = " ".join(lines[max(0, li - 6): li + 1]).lower()
+                    ctx = " ".join(_section_lines(lines, li)).lower()  # the branch's own section, not a neighbour's
                     if btoks and all(t in _tokens(ctx) for t in btoks):
                         return Answer(text=f"The {branch} branch's phone number is {m.group(0)}.",
                                       sources=[self._src(page.get("snapshot_id", snap.snapshot_id), page["url"], _clean_inline(line))],
