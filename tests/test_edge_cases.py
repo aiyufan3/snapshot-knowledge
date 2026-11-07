@@ -626,5 +626,51 @@ class ConflictIdentityTests(unittest.TestCase):
         self.assertEqual(sorted(tuple(c.values) for c in cs), [("1.00% APY", "1.50% APY"), ("2.00% APY", "2.50% APY")])
 
 
+class ScopeDefinitionTests(unittest.TestCase):
+    """What completes an eligibility rule: an explicit definition of the area first; office locations only as
+    separated context; never the places served by another line of business; and no continuation across sections."""
+
+    RULE = ("# Join\n\n## You're Eligible to Join If Any of These Sound Like You\n\n"
+            "- You live or work within our charter area.\n\n- You have an immediate family member who is a member.\n\n")
+    Q = "Who is eligible to become a member?"
+
+    def test_explicit_definition_beats_office_locations_on_the_same_page(self):
+        md = self.RULE + "## About us\n\nOur offices are located in Northvale, Westmere and Eastbrook. Our charter area is Harbor County only.\n"
+        a = build(("s1", "2026-01-10", [page("/about/join", "Join", md)])).answer(self.Q)
+        self.assertTrue(a.confident, a.text)
+        self.assertIn("defines that area", a.text)
+        self.assertIn("Harbor County", a.text)
+        self.assertNotIn("Northvale", a.text)
+
+    def test_office_locations_alone_are_given_as_separated_context(self):
+        md = self.RULE + "## About us\n\nOur offices are located in Northvale, Westmere and Eastbrook.\n"
+        a = build(("s1", "2026-01-10", [page("/about/join", "Join", md)])).answer(self.Q)
+        self.assertIn("does not define that area", a.text)
+        self.assertIn("Northvale", a.text)
+        self.assertNotIn("defines that area", a.text)
+
+    def test_places_served_by_another_line_of_business_are_not_used(self):
+        md = self.RULE + "## Insurance\n\nOur insurance agency serves members in Northvale, Westmere and Eastbrook.\n"
+        a = build(("s1", "2026-01-10", [page("/about/join", "Join", md)])).answer(self.Q)
+        self.assertIn("live or work", a.text)
+        self.assertNotIn("Northvale", a.text)
+
+    def test_definition_on_another_page_is_used_and_attributed(self):
+        other = ("# Scholarships\n\n**Charter Area:** The entrant's permanent home address must be located in one of the following counties:\n\n"
+                 "  - Northvale: Any county\n\n  - Westmere: Carroll, Rock Island, Stephenson\n\n**Grade Point Average:** A cumulative GPA of 2.5 is required.\n")
+        ks = build(("s1", "2026-01-10", [page("/about/join", "Join", self.RULE), page("/scholarships", "Scholarships", other)]))
+        a = ks.answer(self.Q)
+        self.assertIn("Elsewhere on the website", a.text)
+        self.assertIn("Westmere: Carroll, Rock Island, Stephenson", a.text)
+        self.assertNotIn("Grade Point Average", a.text)
+        self.assertEqual([s.url for s in a.sources], [SITE + "/about/join", SITE + "/scholarships", SITE + "/scholarships"])
+
+    def test_colon_continuation_stays_inside_the_section(self):
+        md = "# Join\n\n## Eligibility\n\nYou are eligible to join if you live in one of the following:\n\n## Auto Loans\n\nRates as low as 8.25% APR on new vehicles.\n"
+        a = build(("s1", "2026-01-10", [page("/about/join", "Join", md)])).answer(self.Q)
+        self.assertNotIn("8.25", a.text)
+        self.assertNotIn("Auto Loans", a.text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -160,6 +160,12 @@ LOCATE_RE = re.compile(
 _PLACE = r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?"
 SCOPE_LIST_RE = re.compile(
     rf"\b(?:in|of|across|throughout|within)\s+({_PLACE}(?:,\s*{_PLACE})*,?\s+(?:and|or|&)\s+{_PLACE}|{_PLACE}(?:,\s*{_PLACE}){{2,}})")
+PLACE_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+(?:County|Counties|Parish|Parishes|Township|Townships|Borough)\b")
+PLACE_LIST_RE = re.compile(rf"{_PLACE}(?:,\s*{_PLACE}){{2,}}|\b(?:count(?:y|ies)|parish(?:es)?)\b", re.I)
+# Terms that only ever name a membership area (used when looking beyond the membership pages).
+STRONG_SCOPE_RE = re.compile(r"\b(?:charter area|field of membership)\b", re.I)
+# Places served by another line of business are not the membership area.
+THIRD_PARTY_RE = re.compile(r"\b(?:insurance|agency|agencies|partner\w*|subsidiar\w*|affiliate\w*|title company|investment|wealth|realty|real estate)\b", re.I)
 
 
 def _is_intro_header(header: str) -> bool:
@@ -566,6 +572,11 @@ def _excluded_column(header: str) -> bool:
 
 def _is_list_item(s: str) -> bool:
     return bool(re.match(r"^(?:[-*•]|\d+[.)])\s+", (s or "").strip()))
+
+
+def _is_list_text(text: str) -> bool:
+    """A paragraph block made of list items (items are joined with spaces when the page is read)."""
+    return _is_list_item(text)
 
 
 def _is_label_line(s: str) -> bool:
@@ -1538,39 +1549,78 @@ class Knowledge:
         if confident and ELIGIBILITY_Q_RE.search(q):
             scope = self._scope_sentence(snap, blk)
             if scope is not None:
-                sent, sblk = scope
-                text = f"{text} On where that applies, the website says: {sent}"
+                sent, sblk, nxt, kind = scope
+                lead = {"explicit": "The website defines that area as follows:",
+                        "elsewhere": "Elsewhere on the website that area is described as follows:",
+                        "context": "The page does not define that area; separately, it says:"}[kind]
+                text = f"{text} {lead} {sent}"
                 sources.append(self._src(sblk.get("snapshot_id", snap.snapshot_id), sblk["url"], sent))
+                if nxt is not None:
+                    text = f"{text} {nxt['text']}"
+                    sources.append(self._src(nxt.get("snapshot_id", snap.snapshot_id), nxt["url"], nxt["text"]))
         return Answer(text=text, sources=sources, confident=confident, conflict_note=note), coverage
 
     def _next_block(self, snap: SnapIndex, blk: dict) -> Optional[dict]:
-        """The paragraph that follows ``blk`` on the same page, if any."""
+        """The paragraph that continues ``blk`` on the same page: the next one under the same heading,
+        when it is a list or carries no amounts.  A new section is not a continuation."""
         j = blk.get("i", -1) + 1
         if 0 < j < len(snap.blocks):
             nxt = snap.blocks[j]
-            if nxt["url"] == blk["url"] and nxt.get("pos") == blk.get("pos", 0) + 1:
+            if (nxt["url"] == blk["url"] and nxt.get("pos") == blk.get("pos", 0) + 1 and nxt["heading"] == blk["heading"]
+                    and (_is_list_text(nxt["text"]) or not AMOUNT_RE.search(nxt["text"]))):
                 return nxt
         return None
 
     def _scope_sentence(self, snap: SnapIndex, blk: dict):
-        """An eligibility rule that refers to an area by name ("within our charter area") does not
-        say where that is.  Return (sentence, block) for the sentence that lists the places served,
-        from the same page first and otherwise from the site's membership pages only."""
-        if not SCOPE_TERM_RE.search(f"{blk['heading']} {blk['text']}") or SCOPE_LIST_RE.search(blk["text"]):
+        """An eligibility rule that refers to an area by name ("within our charter area") does not say
+        where that is.  Returns (sentence, block, continuation block or None, kind) or None, where kind is
+        "explicit" (a sentence that defines the area, from the same page or the membership pages),
+        "elsewhere" (a definition of the charter area or field of membership on another page) or
+        "context" (the places served, stated on the same page or the membership pages, which is not a
+        definition of the area).  Places served by another line of business are never used."""
+        if not SCOPE_TERM_RE.search(f"{blk['heading']} {blk['text']}") or SCOPE_LIST_RE.search(blk["text"]) or PLACE_RE.search(blk["text"]):
             return None
+        same = [b for b in snap.blocks if b["url"] == blk["url"]]
+        member = [b for b in snap.blocks if re.search(r"join|member|eligib", f"{urlparse(b['url']).path} {b['title']}", re.I)]
 
-        def first_sentence(blocks):
+        def sentences(b):
+            return [x.strip() for x in re.split(r"(?<=[.!?])\s+", b["text"]) if x.strip()]
+
+        def explicit(blocks, term, local):
+            # A definition names the places (a list; on the membership pages a single county will do) or
+            # introduces a list of them with a colon.  A sentence naming one place among others is not one.
             for b in blocks:
-                for sent in re.split(r"(?<=[.!?])\s+", b["text"]):
-                    if len(sent) <= 300 and LOCATE_RE.search(sent) and SCOPE_LIST_RE.search(sent):
-                        return sent.strip(), b
+                if b is blk or len(b["text"]) > 600 or THIRD_PARTY_RE.search(f"{b['heading']} {b['text']}"):
+                    continue
+                sents = sentences(b)
+                for sent in sents:
+                    if len(sent) > 300 or not term.search(sent):
+                        continue
+                    if SCOPE_LIST_RE.search(sent) or (local and PLACE_RE.search(sent)):
+                        return sent, b, None
+                if sents and sents[-1].endswith(":") and term.search(b["text"]):
+                    nxt = self._next_block(snap, b)
+                    if nxt is not None and _is_list_text(nxt["text"]) and (PLACE_LIST_RE.search(nxt["text"]) or SCOPE_LIST_RE.search(nxt["text"]) or PLACE_RE.search(nxt["text"])):
+                        return _trim_sentence(b["text"], 400), b, nxt
             return None
 
-        found = first_sentence([b for b in snap.blocks if b["url"] == blk["url"]])
-        if found is None:
-            found = first_sentence([b for b in snap.blocks
-                                    if re.search(r"join|member|eligib", f"{urlparse(b['url']).path} {b['title']}", re.I)])
-        return found
+        def context(blocks):
+            for b in blocks:
+                if THIRD_PARTY_RE.search(b["heading"]):
+                    continue
+                for sent in sentences(b):
+                    if len(sent) <= 300 and LOCATE_RE.search(sent) and SCOPE_LIST_RE.search(sent) and not THIRD_PARTY_RE.search(sent):
+                        return sent, b, None
+            return None
+
+        found = explicit(same, SCOPE_TERM_RE, True) or explicit(member, SCOPE_TERM_RE, True)
+        if found is not None:
+            return found + ("explicit",)
+        found = explicit(sorted(snap.blocks, key=lambda b: (bool(b["pub"]), b["i"])), STRONG_SCOPE_RE, False)  # undated pages before articles
+        if found is not None:
+            return found + ("elsewhere",)
+        found = context(same) or context(member)
+        return found + ("context",) if found is not None else None
 
     def _contact_channel(self, snap: SnapIndex, ref_day: str = "") -> Optional[dict]:
         """The site's own contact page and the phone number it publishes as in force on ``ref_day``:
