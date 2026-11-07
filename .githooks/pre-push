@@ -1,0 +1,13 @@
+#!/bin/sh
+# Pushing is refused unless it has been explicitly authorised for this clone AND the
+# whole history passes the release check. Authorisation is a deliberate, manual step:
+#     git config release.pushAuthorized yes
+# Nothing in this repository sets it.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+if [ "$(git config --get release.pushAuthorized || true)" != "yes" ]; then
+  echo "pre-push: push refused - release not authorised (release.pushAuthorized is not 'yes')" >&2
+  exit 1
+fi
+echo "pre-push: release check on full history"
+python3 -I tools/privacy_check.py --history

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Refuse commits whose staged content fails the release check or whose tests fail.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+echo "pre-commit: release check on the index"
+python3 -I tools/privacy_check.py --staged
+echo "pre-commit: quick regression"
+python3 -I -m unittest discover -s tests -q

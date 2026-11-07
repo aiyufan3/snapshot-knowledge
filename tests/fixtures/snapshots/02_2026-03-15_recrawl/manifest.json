@@ -1,0 +1,84 @@
+{
+ "snapshot_id": "02_2026-03-15_recrawl",
+ "taken_on": "2026-03-15",
+ "pages": [
+  {
+   "file": "pages/p00.md",
+   "url": "https://www.northwind-cu.example/rates",
+   "title": "Rates | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p01.md",
+   "url": "https://www.northwind-cu.example/business-rates",
+   "title": "Business Rates | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p02.md",
+   "url": "https://www.northwind-cu.example/personal/credit-cards",
+   "title": "Credit Cards | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p03.md",
+   "url": "https://www.northwind-cu.example/promo/spring-certificate-special",
+   "title": "Spring Savings Promotion | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p04.md",
+   "url": "https://www.northwind-cu.example/learn/blog/how-certificates-work",
+   "title": "How certificates work | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p05.md",
+   "url": "https://www.northwind-cu.example/contact",
+   "title": "Contact Us and Find a Location | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p06.md",
+   "url": "https://www.northwind-cu.example/newsroom/harbor-branch-opens",
+   "title": "Northwind opens Harbor branch | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p07.md",
+   "url": "https://www.northwind-cu.example/newsroom/annual-report-2025",
+   "title": "Northwind releases 2025 annual report | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p08.md",
+   "url": "https://www.northwind-cu.example/newsroom/annual-report-2024",
+   "title": "Northwind releases 2024 annual report | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p09.md",
+   "url": "https://www.northwind-cu.example/about/join",
+   "title": "Join | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p10.md",
+   "url": "https://www.northwind-cu.example/",
+   "title": "Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p11.md",
+   "url": "https://www.northwind-cu.example/lp/auto-refi",
+   "title": "Refinance your auto loan | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  },
+  {
+   "file": "pages/p12.md",
+   "url": "https://www.northwind-cu.example/newsroom/shared-branching",
+   "title": "Northwind joins shared branching network | Northwind Community Credit Union",
+   "fetched_at": "2026-03-15T08:00:00Z"
+  }
+ ]
+}

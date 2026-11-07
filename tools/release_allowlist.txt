@@ -1,0 +1,14 @@
+# Files that may be published. Everything else is rejected by tools/privacy_check.py.
+README.md
+NOTES.md
+requirements.txt
+.gitignore
+solution.py
+tests/*.py
+tests/fixtures/snapshots/*/manifest.json
+tests/fixtures/snapshots/*/pages/*.md
+tools/privacy_check.py
+tools/release_allowlist.txt
+tools/install_hooks.sh
+.githooks/pre-commit
+.githooks/pre-push

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+results/
+*.zip
+*.pdf
+/snapshots/
+.DS_Store
+.env
+.env.*

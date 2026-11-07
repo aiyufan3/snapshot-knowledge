@@ -1,0 +1,2 @@
+# No third-party runtime dependencies: the system uses only the Python 3.11 standard library.
+# The optional LLM judge of the external evaluation harness is not used here.
